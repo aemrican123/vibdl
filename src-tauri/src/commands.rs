@@ -17,6 +17,7 @@ use crate::metadata::{self, TagCache};
 use crate::net::ApiClient;
 use crate::providers::danbooru::{self, DanbooruProvider};
 use crate::providers::gelbooru::{self, GelbooruProvider};
+use crate::providers::moebooru::{self, MoebooruProvider};
 use crate::providers::{self, ImageboardProvider, ProviderInfo, SearchQuery};
 use crate::settings::{self, credentials, Settings};
 
@@ -62,20 +63,20 @@ impl AppState {
         let meta = info(id)?;
         let account = self.snapshot().accounts.get(id).cloned();
         let key = credentials::get_api_key(id)?;
-        let both = account.zip(key);
+        // Never send a stored account to a board that doesn't use one.
+        let both = if meta.uses_account { account.zip(key) } else { None };
         if meta.requires_account && both.is_none() {
             return Err(AppError::MissingCredentials(meta.name.into()));
         }
+        let api = self.api.clone();
+        let danbooru_creds = || both.clone().map(|(login, api_key)| danbooru::Credentials { login, api_key });
+        let gelbooru_creds = || both.clone().map(|(user_id, api_key)| gelbooru::Credentials { user_id, api_key });
         Ok(match id {
-            danbooru::PROVIDER_ID => Box::new(DanbooruProvider::new(
-                self.api.clone(),
-                both.map(|(login, api_key)| danbooru::Credentials { login, api_key }),
-            )),
-            _ => {
-                let site = if id == gelbooru::RULE34.id { &gelbooru::RULE34 } else { &gelbooru::GELBOORU };
-                let (user_id, api_key) = both.expect("checked above");
-                Box::new(GelbooruProvider::new(site, self.api.clone(), gelbooru::Credentials { user_id, api_key }))
-            }
+            "danbooru" => Box::new(DanbooruProvider::new(&danbooru::DANBOORU, api, danbooru_creds())),
+            "yandere" => Box::new(MoebooruProvider::new(&moebooru::YANDERE, api)),
+            "rule34" => Box::new(GelbooruProvider::new(&gelbooru::RULE34, api, gelbooru_creds())),
+            "safebooruorg" => Box::new(GelbooruProvider::new(&gelbooru::SAFEBOORU_ORG, api, gelbooru_creds())),
+            other => return Err(AppError::Settings(format!("No client for imageboard '{other}'."))),
         })
     }
 
@@ -388,7 +389,7 @@ pub fn library_details(
 pub async fn serve_library(state: &AppState, key: &str) -> AppResult<Option<(Vec<u8>, &'static str)>> {
     let Some((kind, rest)) = key.split_once('-') else { return Ok(None) };
     let Some((provider, md5)) = rest.split_once('-') else { return Ok(None) };
-    if !crate::storage::is_md5(md5) || providers::provider_info(provider).is_none() {
+    if !crate::storage::is_md5(md5) || !providers::is_known_board(provider) {
         return Ok(None);
     }
     let lib = state.library()?;
@@ -659,6 +660,16 @@ fn to_pairs(items: Vec<ItemKey>) -> Vec<(String, String)> {
     items.into_iter().map(|k| (k.provider, k.remote_id)).collect()
 }
 
+/// Open the folder containing vibdl.log.
+#[tauri::command]
+pub fn open_log_folder(app: AppHandle) -> AppResult<()> {
+    let dir = app.path().app_log_dir().map_err(|e| AppError::Settings(e.to_string()))?;
+    std::fs::create_dir_all(&dir)?;
+    app.opener()
+        .open_path(dir.display().to_string(), None::<&str>)
+        .map_err(|e| AppError::Settings(format!("couldn't open: {e}")))
+}
+
 /// Native "choose folder" dialog. `None` if the user cancels.
 #[tauri::command]
 pub async fn pick_folder(app: AppHandle, title: String, start: Option<String>) -> AppResult<Option<String>> {
@@ -820,7 +831,7 @@ pub async fn serve_media(
 ) -> AppResult<Option<browse::media::MediaResponse>> {
     if let Some(rest) = key.strip_prefix("l-") {
         let Some((provider, md5)) = rest.split_once('-') else { return Ok(None) };
-        if !crate::storage::is_md5(md5) || providers::provider_info(provider).is_none() {
+        if !crate::storage::is_md5(md5) || !providers::is_known_board(provider) {
             return Ok(None);
         }
         let lib = state.library()?;

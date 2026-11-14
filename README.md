@@ -1,89 +1,185 @@
-# VIBDL — Vibecoded Image Board Downloader Library
+# VIBDL
 
-Personal desktop app for browsing imageboards, downloading selected originals with their metadata, and organizing them in a searchable local library. Boards: **Danbooru** (default), Gelbooru (search/metadata only: its hotlink protection blocks images for apps), Rule34 (untested). Pick one in Settings.
+**Vibecoded Image Board Downloader Library.** A desktop app for browsing imageboards, saving the posts you like together with their tags, and keeping them in a searchable offline library.
 
-Personal use only — not distributed. Full plan: [docs/PLAN.md](docs/PLAN.md).
+Windows · Tauri 2 (Rust) · SvelteKit · SQLite · MIT OR Apache-2.0
 
-## Stack
+---
 
-Tauri 2 (Rust core) · SvelteKit + TypeScript UI · SQLite
+## What it does
 
-## Develop
+- **Browse** a board's newest posts as soon as the app opens. Search with tags, get tag suggestions while you type, and preview images and MP4/WebM videos in a full-screen viewer with zoom and pan.
+- **Download** the original file of one post, or select many posts and send them to the download queue. Every file is checked against the board's MD5 hash before it is kept.
+- **Keep the metadata.** Each file gets a small JSON sidecar with its tags (sorted into artist, character, copyright, general and meta), rating, source and post link.
+- **Library** works fully offline. Filter by tag, category, rating, board or file type, sort the results, and see tag counts per category. Select many items with Shift or Ctrl and delete, export or refresh them in bulk.
+- **Library tools**: find visually similar images, check for missing or changed files, export a selection to another folder, and rebuild the index from the sidecars.
+- **Saved searches** and a download queue that survives restarts.
+
+VIBDL is a client for each board's public API. It does not scrape web pages, and it does not get around rate limits, logins, hotlink protection or any other access control.
+
+## Supported boards
+
+| Board | Account | Notes |
+|---|---|---|
+| [Danbooru](https://danbooru.donmai.us) | Optional | Default board. Without an account, searches are limited to 2 tags. Add your username and API key in Settings to raise the limit. |
+| [yande.re](https://yande.re) | No | |
+| [Safebooru.org](https://safebooru.org) | No | Safe-for-work images only. |
+| [Rule34](https://rule34.xxx) | Required | Adult content. Needs your own user ID and API key from rule34.xxx → My Account → Options. |
+
+All four allow multi-download through the queue.
+
+### Boards that were removed
+
+These were tried and taken out because they block third-party apps:
+
+- **Gelbooru**: its hotlink protection blocks images for apps. VIBDL will not fake browser headers to get around it.
+- **Konachan** and **Safebooru (donmai)**: they answer API requests from apps with HTTP 403.
+
+If you downloaded posts from these boards with an older version, those items still show up and work in your Library.
+
+## Install
+
+1. Open the [Releases](https://github.com/aemrican123/vibdl/releases) page and download `VIBDL_<version>_x64-setup.exe`.
+2. Run it. It installs for your Windows user only, so no admin rights are needed, and adds VIBDL to the Start menu and the desktop.
+3. Windows SmartScreen may warn you because the installer isn't code-signed. Click **More info → Run anyway** if you trust the release.
+
+The app needs the WebView2 runtime. Windows 10 and 11 already have it, and the installer adds it if it's missing.
+
+### Upgrading from 0.3.x
+
+Version 0.4.0 changed the app's internal ID, so Windows treats it as a new app. On first start it copies your settings and download queue from the old version. Your library folder and saved API keys are not affected. Afterwards you can uninstall the old "VIBDL" entry from Settings → Apps.
+
+## First run
+
+1. **Settings** opens first. Confirm you are 18 or older. This is needed because some boards host adult content.
+2. Pick a board. If it needs an account, enter your user name or ID and API key, then click **Test connection**.
+3. Choose which ratings to show. Only **general** is on by default.
+4. Choose your library folder. The default is `Pictures\VIBDL`.
+5. Go to **Browse**.
+
+## Using it
+
+### Browse
+
+Type tags in the search box. Suggestions come from the current board: use ↑ ↓ to pick one and Tab or Enter to accept it. Click a post to see its details. Shift-click or Ctrl-click to select several posts and send them all to the queue.
+
+### Downloads
+
+The queue downloads one file at a time, waits between requests, and retries when something fails. You can cancel a job, retry failed ones, and clear finished ones. If you close the app, the queue picks up where it left off next time.
+
+### Library search syntax
+
+Terms are separated by spaces, and an item has to match all of them.
+
+| Term | Meaning |
+|---|---|
+| `long_hair` | has this tag (any category) |
+| `-monochrome` | doesn't have this tag |
+| `artist:name` | tag in a category (also `character:` / `char:`, `copyright:` / `copy:`, `general:`, `meta:`) |
+| `rating:g,s` | rating is one of these (letters or full words) |
+| `board:danbooru` | came from this board (also `provider:`) |
+| `type:png` | file type (also `ext:`) |
+
+### Keyboard shortcuts
+
+| Where | Key | Action |
+|---|---|---|
+| Browse / Library | `/` | focus the search box |
+| Browse / Library | `Enter` | open the selected post in the viewer |
+| Browse / Library | `←` `→` | previous / next post |
+| Browse / Library | `Esc` | close the panel or clear the selection |
+| Library | `Ctrl+A` | select all |
+| Library | `Delete` | delete the selected items (asks first) |
+| Viewer | `F` or `0` | fit to window |
+| Viewer | `1` | actual size |
+| Viewer | `+` `-`, mouse wheel | zoom |
+| Viewer | drag | pan |
+| Viewer | `Esc` | close |
+
+Deleted files go to the Recycle Bin, not straight to permanent deletion.
+
+## Where your data lives
+
+| What | Where |
+|---|---|
+| Library | `<library folder>\<board>\<first 2 chars of md5>\<md5>.<ext>` plus a `<md5>.vibdl.json` sidecar |
+| Library index | `<library folder>\.vibdl\library.sqlite`. It can always be rebuilt from the sidecars. |
+| Settings, queue | `%APPDATA%\io.github.aemrican123.vibdl\` |
+| Thumbnail cache | `%LOCALAPPDATA%\io.github.aemrican123.vibdl\` (size limit set in Settings) |
+| Log | `%LOCALAPPDATA%\io.github.aemrican123.vibdl\logs\vibdl.log`. Use Settings → Open log folder. API keys and user IDs are removed from the log. |
+| API keys | Windows Credential Manager (service `vibdl`). They are never written to files. |
+
+## Privacy
+
+- No telemetry, analytics, ads or update checks.
+- The app only connects to the board you are using. Requests identify themselves as `VIBDL/<version> (+https://github.com/aemrican123/vibdl)`.
+- No API keys ship with the app. You bring your own, and they stay in your OS keychain.
+
+## Build from source
+
+You need [Rust](https://rustup.rs) (stable), [Node.js](https://nodejs.org) 20 or newer, and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for Windows (the WebView2 runtime and the MSVC build tools).
 
 ```powershell
-npm install
-npm run tauri dev               # run the app
-cd src-tauri; cargo test        # Rust unit tests
-npm run check                   # Svelte/TS type check
+git clone https://github.com/aemrican123/vibdl.git
+cd vibdl
+npm ci
+npm run tauri dev       # run in development mode
+npm run tauri build     # build the installer
 ```
 
-## Install as a normal app (Windows)
+The installer ends up in `src-tauri\target\release\bundle\nsis\`.
+
+If PowerShell blocks `npm` with an execution-policy error, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
+
+Checks (CI runs these too):
 
 ```powershell
-npm run tauri build
+cd src-tauri; cargo test; cargo clippy --all-targets; cd ..
+npm run check
 ```
 
-This produces `src-tauri\target\release\bundle\nsis\VIBDL_<version>_x64-setup.exe`. Run it. It installs for your user only (no admin) and adds VIBDL to the Start menu. The installed app shares settings, library and queue with `npm run tauri dev`.
-
-Desktop shortcut (run once after installing):
-
-```powershell
-$exe = Get-ChildItem "$env:LOCALAPPDATA\VIBDL" -Filter *.exe | Where-Object { $_.Name -notmatch '^uninstall' } | Select-Object -First 1
-$lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'VIBDL.lnk'))
-$lnk.TargetPath = $exe.FullName; $lnk.WorkingDirectory = $exe.DirectoryName; $lnk.IconLocation = $exe.FullName; $lnk.Save()
-```
-
-App icon source: `src-tauri/app-icon.png` (regenerate sizes with `npm run tauri icon src-tauri/app-icon.png`).
-
-## Layout
+### Project layout
 
 ```
-src/                    UI (SvelteKit, SPA mode)
-  lib/api.ts            typed wrappers for Rust commands
-  lib/Browse.svelte     online gallery
-  lib/Settings.svelte   setup & settings
-  lib/Library.svelte    offline library (+ LocalPanel.svelte, LibraryTools.svelte)
-  lib/Downloads.svelte  download queue
+src/                     UI (SvelteKit, SPA mode, Svelte 5)
+  lib/api.ts             typed wrappers for the Rust commands
+  lib/Browse.svelte      online gallery
+  lib/Library.svelte     offline library (+ LocalPanel, LibraryTools)
+  lib/Downloads.svelte   download queue
+  lib/Viewer.svelte      full-screen viewer
+  lib/Settings.svelte    setup and settings
 src-tauri/src/
-  commands.rs           Tauri IPC surface
-  error.rs              redacted error type
-  net/                  HTTP client, rate limiter, retry/backoff, secret redaction
-  browse/               gallery queries, rating filter, thumb:// protocol + disk cache
-  providers/            ImageboardProvider trait + shared types
-    danbooru/           Danbooru client (inline tag categories) + parser + fixtures
-    gelbooru/           Gelbooru-engine client (Gelbooru, Rule34) + parser + fixtures
-  metadata/             tag categorization + cache
-  downloads/            original downloads + index rebuild
-  storage/              library folder layout + sidecar JSON
-  db/                   SQLite index
-  library/              offline query language, search, facets, local thumbnails, manage (delete/similar/check/export)
-  queue/                download queue (sequential worker, retry, cancel)
-  settings/             settings.json + OS keychain credentials
-docs/PLAN.md            feasibility report & roadmap
+  commands.rs            the commands the UI can call
+  net/                   HTTP client, rate limiter, retry and backoff, secret redaction
+  providers/             board integrations behind one ImageboardProvider trait
+    danbooru/            Danbooru engine
+    moebooru/            Moebooru engine (yande.re)
+    gelbooru/            Gelbooru-style engine (Safebooru.org, Rule34)
+  browse/                gallery queries, thumb:// and media:// protocols, disk cache
+  downloads/             verified downloads and index rebuild
+  storage/               library layout and sidecars
+  db/                    SQLite index and migrations
+  library/               offline query language, facets, local thumbnails, bulk tools
+  queue/                 persistent download queue
+  settings/              settings file and OS-keychain credentials
+docs/PLAN.md             original feasibility study and design notes
 ```
 
-## Status
+### Adding a board
 
-- [x] M0 — API fields/auth verified live; TOS reviewed (personal use)
-- [x] M1 — Skeleton, settings, keychain credentials, rate-limited client, Gelbooru provider
-- [x] M2 — Online browser (thumbnail grid, infinite scroll, thumbnail disk cache)
-- [x] M3 — Post detail + categorized tags + sample preview
-- [x] Provider picker (Danbooru / Gelbooru / Rule34); Gelbooru images blocked by hotlink protection
-- [x] M4 — Single download (MD5-verified, atomic) + SQLite index + sidecars + rebuild
-- [x] M7 — Library management: delete (Recycle Bin), refresh metadata, similar-image finder (dHash), library check, export with readable names
-- [x] M6 — Download queue: multi-select in Browse, downloaded badges, Downloads tab (sequential, retry, cancel). Enabled per board (Danbooru only; Gelbooru never)
-- [x] M5 — Offline Library tab: filters (tags, artist/char/copy, rating, board, type), facets, sort, local thumbnails — **MVP complete**
+Implement `ImageboardProvider` (or reuse one of the three engines with a new `Site`), add a `ProviderInfo` entry in `providers/mod.rs`, add a parser test with a small synthetic fixture, and check that board's API terms before you set `allows_batch: true`. Please don't add boards that block apps.
 
-## Keyboard shortcuts
+## Disclaimer
 
-`/` focus search · `Enter` or double-click open the full-screen viewer (there: `←`/`→` navigate, wheel zoom, drag pan, double-click or `F` fit / `1` 100 %, `+`/`-` zoom, `Esc` close) · `↑`/`↓` + `Tab`/`Enter` pick a tag suggestion · `Esc` close panel / leave select mode · `←`/`→` previous/next item while a panel is open · Ctrl/Shift+click multi-select (Browse)
+VIBDL is not affiliated with or endorsed by any of the boards it supports. You are responsible for following each board's terms of service and the copyright of the artwork you download. Please support the artists. Some supported boards host adult content, so the app is meant for adults (18+).
 
-## Library filter syntax
+## License
 
-`long_hair` has tag · `-monochrome` lacks tag · `artist:name` / `char:name` / `copy:name` / `meta:name` tag in a category · `rating:g,s` · `board:danbooru` · `type:png`. All terms are combined with AND. Your Settings rating filter always applies.
+Dual-licensed under either of
 
-## Safety rules baked in
+- [MIT License](LICENSE-MIT)
+- [Apache License, Version 2.0](LICENSE-APACHE)
 
-- API key lives only in the OS credential store; `api_key`/`user_id` are redacted from every log and error.
-- ≥ 500 ms between API requests (default 1 s), backoff on 429/5xx, hard stop on 401/403.
-- Only general-rated content is shown until you opt in.
+at your option. Contributions are accepted under the same terms (see [CONTRIBUTING.md](CONTRIBUTING.md)). Third-party licenses are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
+© 2026 aemrican123

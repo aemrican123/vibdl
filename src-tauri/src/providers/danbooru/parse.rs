@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use super::{post_url, MAX_PAGE_NUMBER, PROVIDER_ID};
+use super::{post_url, Site, MAX_PAGE_NUMBER};
 use crate::error::{AppError, AppResult};
 use crate::providers::{Page, RemotePost, TagCategory, TagInfo, ALL_RATINGS};
 
@@ -81,7 +81,7 @@ fn split(v: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn post(v: &Value) -> Option<RemotePost> {
+pub fn post(site: &Site, v: &Value) -> Option<RemotePost> {
     if !v.is_object() {
         return None;
     }
@@ -108,8 +108,8 @@ pub fn post(v: &Value) -> Option<RemotePost> {
     let tags = split(v, "tag_string");
 
     Some(RemotePost {
-        provider: PROVIDER_ID,
-        post_url: post_url(&remote_id),
+        provider: site.id,
+        post_url: post_url(site, &remote_id),
         remote_id,
         md5: get_str(v, "md5").map(|m| m.to_ascii_lowercase()),
         rating: get_str(v, "rating").and_then(|r| rating_word(&r)),
@@ -130,7 +130,7 @@ pub fn post(v: &Value) -> Option<RemotePost> {
     })
 }
 
-pub fn posts_page(body: &Value, page: u32, limit: u32) -> AppResult<Page<RemotePost>> {
+pub fn posts_page(site: &Site, body: &Value, page: u32, limit: u32) -> AppResult<Page<RemotePost>> {
     let raw = match body {
         Value::Array(a) => a,
         Value::Null => &Vec::new(),
@@ -146,7 +146,7 @@ pub fn posts_page(body: &Value, page: u32, limit: u32) -> AppResult<Page<RemoteP
             return Err(AppError::Rejected(msg.chars().take(200).collect()));
         }
     };
-    let items: Vec<RemotePost> = raw.iter().filter_map(post).collect();
+    let items: Vec<RemotePost> = raw.iter().filter_map(|v| post(site, v)).collect();
     let full = raw.len() as u32 >= limit;
     let next_ok = page + 2 <= MAX_PAGE_NUMBER; // next page (1-based) = page + 2
     Ok(Page {
@@ -189,6 +189,7 @@ pub fn tags(body: &Value) -> AppResult<Vec<TagInfo>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::danbooru::{DANBOORU, SAFEBOORU};
 
     // SYNTHETIC fixture shaped after open-source clients; replace with a real
     // capture (no credentials) once verified live.
@@ -209,7 +210,7 @@ mod tests {
     #[test]
     fn parses_posts_with_inline_categories() {
         let body: Value = serde_json::from_str(POSTS).unwrap();
-        let page = posts_page(&body, 0, 3).unwrap();
+        let page = posts_page(&DANBOORU, &body, 0, 3).unwrap();
         assert_eq!(page.items.len(), 2, "post without id is skipped");
         assert!(page.has_more);
 
@@ -233,13 +234,18 @@ mod tests {
         assert_eq!(v.file_ext.as_deref(), Some("mp4"));
         assert!(v.sample_url.is_none());
         assert_eq!(v.rating.as_deref(), Some("general"));
+
+        // Same parser for Safebooru, with its own ids and links.
+        let sb = posts_page(&SAFEBOORU, &body, 0, 3).unwrap();
+        assert_eq!(sb.items[0].provider, "safebooru");
+        assert_eq!(sb.items[0].post_url, "https://safebooru.donmai.us/posts/7000001");
     }
 
     #[test]
     fn error_object_becomes_rejected() {
         let body: Value =
             serde_json::from_str(r#"{"success":false,"message":"You cannot search for more than 2 tags at a time."}"#).unwrap();
-        match posts_page(&body, 0, 60) {
+        match posts_page(&DANBOORU, &body, 0, 60) {
             Err(AppError::Rejected(m)) => assert!(m.contains("2 tags")),
             other => panic!("expected Rejected, got {other:?}"),
         }
@@ -248,7 +254,7 @@ mod tests {
     #[test]
     fn page_cap() {
         let body: Value = serde_json::from_str(POSTS).unwrap();
-        let last = posts_page(&body, MAX_PAGE_NUMBER - 1, 3).unwrap();
+        let last = posts_page(&DANBOORU, &body, MAX_PAGE_NUMBER - 1, 3).unwrap();
         assert!(!last.has_more);
         assert!(last.depth_limited);
     }

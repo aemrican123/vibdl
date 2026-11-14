@@ -171,7 +171,7 @@
               />
               <span class="name">{p.name}</span>
               {#if st?.ready}
-                <span class="pill ok">{st.has_api_key ? "account saved" : "ready"}</span>
+                <span class="pill ok">{p.uses_account && st.has_api_key ? "account saved" : "ready"}</span>
               {:else}
                 <span class="pill">needs account</span>
               {/if}
@@ -183,7 +183,27 @@
       </div>
     </section>
 
-    {#if current}
+    {#if current && !current.uses_account}
+      <section class="card">
+        <h2>{current.name}</h2>
+        <p class="hint">No account is used for {current.name}; VIBDL connects anonymously.</p>
+        <div class="row">
+          <button disabled={busy} onclick={testConn}>Test connection</button>
+          {#if currentStatus?.has_api_key}
+            <button class="ghost" disabled={busy} onclick={clearCreds} title="Remove a key saved earlier (it was never used)">Remove saved key</button>
+          {/if}
+        </div>
+        {#if test}
+          <div class="result">
+            <div>Sample post ID: <strong>{test.sample_post_id ?? "none"}</strong></div>
+            <details>
+              <summary>Fields in the response ({test.sample_fields.length})</summary>
+              <code>{test.sample_fields.join(", ")}</code>
+            </details>
+          </div>
+        {/if}
+      </section>
+    {:else if current}
       <section class="card">
         <h2>{current.name} account {current.requires_account ? "" : "(optional)"}</h2>
         <p class="hint">{current.key_help}</p>
@@ -265,6 +285,16 @@
           {#each rebuild.errors as e}<div class="err-line">{e}</div>{/each}
         </div>
       {/if}
+    </section>
+
+    <section class="card">
+      <h2>Troubleshooting</h2>
+      <p class="hint">
+        VIBDL writes a log to <code>vibdl.log</code> (replaced each time the app starts). API keys are never written to it.
+      </p>
+      <button class="ghost" onclick={() => api.openLogFolder().catch((e) => (message = { kind: "err", text: errorText(e) }))}>
+        Open log folder
+      </button>
     </section>
 
     <section class="card">

@@ -5,7 +5,7 @@ use serde::{Serialize, Serializer};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    #[error("Not authorized by the imageboard (HTTP {0}). Check your user ID and API key.")]
+    #[error("{}", unauthorized_text(*.0))]
     Unauthorized(u16),
     #[error("Rate limited by the imageboard. Wait a bit and try again.")]
     RateLimited,
@@ -28,6 +28,17 @@ pub enum AppError {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
+fn unauthorized_text(status: u16) -> String {
+    if status == 401 {
+        "Not authorized by the imageboard (HTTP 401). Check the account name and API key in Settings.".into()
+    } else {
+        format!(
+            "The imageboard refused access (HTTP {status}). If you saved an account for this board, check it; \
+             otherwise the site is probably blocking apps (bot protection)."
+        )
+    }
+}
 
 impl From<reqwest::Error> for AppError {
     fn from(e: reqwest::Error) -> Self {

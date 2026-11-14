@@ -1,0 +1,48 @@
+{
+  "posts": [
+    {
+      "id": 900001,
+      "tags": "some_artist a_circle some_series char_a thighhighs jpeg_artifacts",
+      "created_at": 1794528000,
+      "source": "https://example.com/art/1",
+      "score": 40,
+      "md5": "ABCDEFABCDEFABCDEFABCDEFABCDEFAB",
+      "file_size": 4000000,
+      "file_ext": "png",
+      "file_url": "https://files.example/image/abcdef/yande.re%20900001.png",
+      "preview_url": "https://assets.example/data/preview/ab/cd/abcdef.jpg",
+      "preview_width": 150,
+      "preview_height": 100,
+      "actual_preview_width": 300,
+      "actual_preview_height": 200,
+      "sample_url": "https://files.example/sample/abcdef/sample.jpg",
+      "jpeg_url": "https://files.example/jpeg/abcdef/full.jpg",
+      "rating": "s",
+      "width": 3000,
+      "height": 2000,
+      "has_children": false,
+      "parent_id": null,
+      "status": "active"
+    },
+    {
+      "id": "900002",
+      "tags": "char_a",
+      "md5": "0123456789abcdef0123456789abcdef",
+      "file_url": "https://files.example/image/0123/x.jpg",
+      "rating": "e",
+      "width": "800",
+      "height": "600"
+    }
+  ],
+  "pools": [],
+  "pool_posts": [],
+  "tags": {
+    "some_artist": "artist",
+    "a_circle": "circle",
+    "some_series": "copyright",
+    "char_a": "character",
+    "thighhighs": "general",
+    "jpeg_artifacts": "faults"
+  },
+  "votes": {}
+}

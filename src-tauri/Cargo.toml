@@ -1,8 +1,11 @@
 [package]
 name = "vibdl"
-version = "0.2.0"
+version = "0.4.0"
 description = "VIBDL - Vibecoded Image Board Downloader Library"
-authors = ["you"]
+authors = ["aemrican123"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aemrican123/vibdl"
+readme = "../README.md"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

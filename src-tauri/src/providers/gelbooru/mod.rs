@@ -1,4 +1,4 @@
-//! Gelbooru-engine boards (dapi): Gelbooru itself and Rule34. Field names
+//! Gelbooru-engine boards (dapi): Gelbooru itself, Rule34 and Safebooru.org. Field names
 //! were verified live for Gelbooru (docs/PLAN.md, Milestone 0); Rule34 is
 //! untested. Parsing is deliberately tolerant.
 
@@ -23,6 +23,25 @@ pub struct Site {
     pub site_url: &'static str,
     /// Results beyond roughly this many (page * limit) are not served.
     pub max_result_depth: u32,
+    /// (our rating, the site's rating word). Gelbooru has four ratings;
+    /// older Gelbooru-engine sites (Rule34, Safebooru.org) have three, with
+    /// "safe" = our "general" and nothing for "sensitive".
+    pub ratings: &'static [(&'static str, &'static str)],
+}
+
+const FOUR_RATINGS: &[(&str, &str)] =
+    &[("general", "general"), ("sensitive", "sensitive"), ("questionable", "questionable"), ("explicit", "explicit")];
+const THREE_RATINGS: &[(&str, &str)] = &[("general", "safe"), ("questionable", "questionable"), ("explicit", "explicit")];
+
+/// Exclude each of the site's ratings the user hasn't allowed.
+pub fn build_query(site: &Site, user_tags: &str, allowed: &[String]) -> String {
+    let mut parts: Vec<String> = user_tags.split_whitespace().map(str::to_string).collect();
+    for (ours, theirs) in site.ratings {
+        if !allowed.iter().any(|a| a == ours) {
+            parts.push(format!("-rating:{theirs}"));
+        }
+    }
+    parts.join(" ")
 }
 
 pub const GELBOORU: Site = Site {
@@ -30,6 +49,7 @@ pub const GELBOORU: Site = Site {
     api_url: "https://gelbooru.com/index.php",
     site_url: "https://gelbooru.com/index.php",
     max_result_depth: 20_000,
+    ratings: FOUR_RATINGS,
 };
 
 pub const RULE34: Site = Site {
@@ -37,6 +57,15 @@ pub const RULE34: Site = Site {
     api_url: "https://api.rule34.xxx/index.php",
     site_url: "https://rule34.xxx/index.php",
     max_result_depth: 200_000,
+    ratings: THREE_RATINGS,
+};
+
+pub const SAFEBOORU_ORG: Site = Site {
+    id: "safebooruorg",
+    api_url: "https://safebooru.org/index.php",
+    site_url: "https://safebooru.org/index.php",
+    max_result_depth: 200_000,
+    ratings: THREE_RATINGS,
 };
 
 pub const MAX_PAGE_SIZE: u32 = 100;
@@ -61,23 +90,27 @@ impl std::fmt::Debug for Credentials {
 pub struct GelbooruProvider {
     site: &'static Site,
     client: Arc<ApiClient>,
-    creds: Credentials,
+    /// Required by Gelbooru/Rule34; Safebooru.org works without.
+    creds: Option<Credentials>,
 }
 
 impl GelbooruProvider {
-    pub fn new(site: &'static Site, client: Arc<ApiClient>, creds: Credentials) -> Self {
+    pub fn new(site: &'static Site, client: Arc<ApiClient>, creds: Option<Credentials>) -> Self {
         Self { site, client, creds }
     }
 
     fn base_query(&self, endpoint: &str) -> Vec<(&'static str, String)> {
-        vec![
+        let mut q = vec![
             ("page", "dapi".into()),
             ("s", endpoint.into()),
             ("q", "index".into()),
             ("json", "1".into()),
-            ("api_key", self.creds.api_key.clone()),
-            ("user_id", self.creds.user_id.clone()),
-        ]
+        ];
+        if let Some(c) = &self.creds {
+            q.push(("api_key", c.api_key.clone()));
+            q.push(("user_id", c.user_id.clone()));
+        }
+        q
     }
 }
 
@@ -89,6 +122,10 @@ pub fn post_url(site: &Site, remote_id: &str) -> String {
 impl ImageboardProvider for GelbooruProvider {
     fn id(&self) -> &'static str {
         self.site.id
+    }
+
+    fn build_query(&self, user_tags: &str, allowed: &[String]) -> String {
+        build_query(self.site, user_tags, allowed)
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -156,5 +193,24 @@ impl ImageboardProvider for GelbooruProvider {
         q.push(("limit", (limit * 2).min(50).to_string()));
         let body = self.client.get_json(self.site.api_url, &q).await?;
         Ok(super::filter_suggestions(prefix, parse::tags(&body)?, limit as usize))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rating_words_per_site() {
+        let general = vec!["general".to_string()];
+        assert_eq!(build_query(&RULE34, "cat", &general), "cat -rating:questionable -rating:explicit");
+        assert_eq!(
+            build_query(&GELBOORU, "", &general),
+            "-rating:sensitive -rating:questionable -rating:explicit"
+        );
+        let all: Vec<String> = crate::providers::ALL_RATINGS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(build_query(&SAFEBOORU_ORG, "x", &all), "x");
+        let explicit_only = vec!["explicit".to_string()];
+        assert_eq!(build_query(&RULE34, "", &explicit_only), "-rating:safe -rating:questionable");
     }
 }

@@ -1,4 +1,5 @@
-//! Danbooru (danbooru.donmai.us). Posts carry their tag categories inline
+//! Danbooru-engine boards: Danbooru and Safebooru (safebooru.donmai.us,
+//! Danbooru's SFW mirror). Posts carry their tag categories inline
 //! (`tag_string_artist`, …), so no extra lookup is needed for them.
 //! Field names come from open-source clients; verify live (docs/PLAN.md).
 
@@ -12,8 +13,17 @@ use super::{Capabilities, ImageboardProvider, Page, RemotePost, SearchQuery, Tag
 use crate::error::{AppError, AppResult};
 use crate::net::ApiClient;
 
-pub const PROVIDER_ID: &str = "danbooru";
-pub const BASE_URL: &str = "https://danbooru.donmai.us";
+/// One Danbooru-engine site.
+#[derive(Debug)]
+pub struct Site {
+    pub id: &'static str,
+    pub base: &'static str,
+}
+
+pub const DANBOORU: Site = Site { id: "danbooru", base: "https://danbooru.donmai.us" };
+pub const SAFEBOORU: Site = Site { id: "safebooru", base: "https://safebooru.donmai.us" };
+
+pub const PROVIDER_ID: &str = DANBOORU.id;
 pub const MAX_PAGE_SIZE: u32 = 200;
 /// Danbooru serves numbered pages up to 1000 for regular accounts.
 pub const MAX_PAGE_NUMBER: u32 = 1000;
@@ -34,13 +44,14 @@ impl std::fmt::Debug for Credentials {
 }
 
 pub struct DanbooruProvider {
+    site: &'static Site,
     client: Arc<ApiClient>,
     creds: Option<Credentials>,
 }
 
 impl DanbooruProvider {
-    pub fn new(client: Arc<ApiClient>, creds: Option<Credentials>) -> Self {
-        Self { client, creds }
+    pub fn new(site: &'static Site, client: Arc<ApiClient>, creds: Option<Credentials>) -> Self {
+        Self { site, client, creds }
     }
 
     fn auth(&self) -> Vec<(&'static str, String)> {
@@ -51,14 +62,14 @@ impl DanbooruProvider {
     }
 }
 
-pub fn post_url(remote_id: &str) -> String {
-    format!("{BASE_URL}/posts/{remote_id}")
+pub fn post_url(site: &Site, remote_id: &str) -> String {
+    format!("{}/posts/{remote_id}", site.base)
 }
 
 #[async_trait]
 impl ImageboardProvider for DanbooruProvider {
     fn id(&self) -> &'static str {
-        PROVIDER_ID
+        self.site.id
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -95,8 +106,8 @@ impl ImageboardProvider for DanbooruProvider {
         if !query.tags.trim().is_empty() {
             q.push(("tags", query.tags.trim().to_string()));
         }
-        let body = self.client.get_json(&format!("{BASE_URL}/posts.json"), &q).await?;
-        parse::posts_page(&body, query.page, limit)
+        let body = self.client.get_json(&format!("{}/posts.json", self.site.base), &q).await?;
+        parse::posts_page(self.site, &body, query.page, limit)
     }
 
     async fn get_post(&self, remote_id: &str) -> AppResult<Option<RemotePost>> {
@@ -106,10 +117,10 @@ impl ImageboardProvider for DanbooruProvider {
         let q = self.auth();
         match self
             .client
-            .get_json(&format!("{BASE_URL}/posts/{remote_id}.json"), &q)
+            .get_json(&format!("{}/posts/{remote_id}.json", self.site.base), &q)
             .await
         {
-            Ok(body) => Ok(parse::post(&body)),
+            Ok(body) => Ok(parse::post(self.site, &body)),
             Err(AppError::Http(404)) => Ok(None),
             Err(e) => Err(e),
         }
@@ -121,14 +132,14 @@ impl ImageboardProvider for DanbooruProvider {
             let mut q = self.auth();
             q.push(("search[name_comma]", chunk.join(",")));
             q.push(("limit", chunk.len().to_string()));
-            let body = self.client.get_json(&format!("{BASE_URL}/tags.json"), &q).await?;
+            let body = self.client.get_json(&format!("{}/tags.json", self.site.base), &q).await?;
             found.extend(parse::tags(&body)?);
         }
         Ok(crate::providers::gelbooru::merge_requested(names, found))
     }
 
     fn post_url(&self, remote_id: &str) -> String {
-        post_url(remote_id)
+        post_url(self.site, remote_id)
     }
 
     async fn suggest_tags(&self, prefix: &str, limit: u32) -> AppResult<Vec<TagInfo>> {
@@ -137,7 +148,7 @@ impl ImageboardProvider for DanbooruProvider {
         q.push(("search[order]", "count".into()));
         q.push(("search[hide_empty]", "yes".into()));
         q.push(("limit", limit.min(50).to_string()));
-        let body = self.client.get_json(&format!("{BASE_URL}/tags.json"), &q).await?;
+        let body = self.client.get_json(&format!("{}/tags.json", self.site.base), &q).await?;
         Ok(super::filter_suggestions(prefix, parse::tags(&body)?, limit as usize))
     }
 }

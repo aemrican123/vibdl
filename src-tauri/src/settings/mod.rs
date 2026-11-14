@@ -84,7 +84,7 @@ impl Settings {
         self.accounts = std::mem::take(&mut self.accounts)
             .into_iter()
             .map(|(k, v)| (k, v.trim().to_string()))
-            .filter(|(k, v)| !v.is_empty() && crate::providers::provider_info(k).is_some())
+            .filter(|(k, v)| !v.is_empty() && crate::providers::is_known_board(k))
             .collect();
         self.library_dir = self.library_dir.filter(|p| !p.as_os_str().is_empty() && p.is_absolute());
         let mut seen = std::collections::HashSet::new();
@@ -96,7 +96,7 @@ impl Settings {
                 query: s.query.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(500).collect(),
             })
             .filter(|s| {
-                (s.scope == "library" || crate::providers::provider_info(&s.scope).is_some())
+                (s.scope == "library" || crate::providers::is_known_board(&s.scope))
                     && seen.insert((s.scope.clone(), s.query.clone()))
             })
             .map(|mut s| {

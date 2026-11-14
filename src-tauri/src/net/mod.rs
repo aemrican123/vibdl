@@ -13,7 +13,7 @@ use crate::error::{AppError, AppResult};
 pub const USER_AGENT: &str = concat!(
     "VIBDL/",
     env!("CARGO_PKG_VERSION"),
-    " (personal desktop library client)"
+    " (+https://github.com/aemrican123/vibdl)"
 );
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -86,6 +86,8 @@ impl ApiClient {
         let mut attempt = 0u32;
         loop {
             self.limiter.acquire().await;
+            // Logged before sending so a request that hangs still shows up.
+            tracing::info!(attempt, "requesting {url}");
             let started = Instant::now();
             let result = self.http.get(url).query(query).send().await;
 
@@ -101,7 +103,7 @@ impl ApiClient {
                 }
                 Ok(resp) => {
                     let status = resp.status();
-                    tracing::debug!(
+                    tracing::info!(
                         status = status.as_u16(),
                         ms = started.elapsed().as_millis() as u64,
                         "GET {}",

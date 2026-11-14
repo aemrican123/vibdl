@@ -1,7 +1,7 @@
 //! VIBDL — Vibecoded Image Board Downloader Library.
 //!
 //! Module map (see docs/PLAN.md):
-//!   providers/  imageboard integrations (Danbooru, Gelbooru, Rule34)
+//!   providers/  imageboard integrations (Danbooru, Moebooru, Gelbooru-style)
 //!   browse/     online gallery queries + `thumb` URI scheme / disk cache
 //!   net/        shared HTTP client, rate limiting, redaction
 //!   settings/   settings file + OS-keychain credentials
@@ -39,15 +39,49 @@ fn empty(status: u16) -> Response<Vec<u8>> {
     Response::builder().status(status).body(Vec::new()).expect("static response")
 }
 
+/// Log to the terminal (dev) and to `<app log dir>/vibdl.log` (always: the
+/// installed app has no console). The file is replaced on each start.
+fn init_logging(log_dir: Option<&std::path::Path>) {
+    use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+    let console = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "vibdl_lib=info,warn".into()));
+    let file = log_dir
+        .and_then(|d| std::fs::create_dir_all(d).ok().map(|_| d.join("vibdl.log")))
+        .and_then(|p| std::fs::File::create(p).ok())
+        .map(|f| {
+            fmt::layer()
+                .with_ansi(false)
+                .with_writer(Mutex::new(f))
+                .with_filter(EnvFilter::new("vibdl_lib=debug,warn"))
+        });
+    let _ = tracing_subscriber::registry().with(console).with(file).try_init();
+}
+
+/// App identifier used before v0.4.0. Its config folder sits next to the
+/// current one (both under the OS app-data root).
+const OLD_IDENTIFIER: &str = "com.vibdl.app";
+
+/// One-time copy of settings and the download queue from the pre-0.4.0
+/// config folder. Never overwrites, never deletes the old folder.
+fn migrate_old_config(config_dir: &std::path::Path) {
+    let Some(old) = config_dir.parent().map(|p| p.join(OLD_IDENTIFIER)) else { return };
+    if old == config_dir || !old.is_dir() {
+        return;
+    }
+    for name in ["settings.json", "queue.json"] {
+        let (from, to) = (old.join(name), config_dir.join(name));
+        if from.is_file() && !to.exists() {
+            match std::fs::copy(&from, &to) {
+                Ok(_) => tracing::info!(file = name, "migrated from {OLD_IDENTIFIER}"),
+                Err(e) => tracing::warn!(file = name, "migration from {OLD_IDENTIFIER} failed: {e}"),
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "vibdl_lib=info,warn".into()),
-        )
-        .init();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -129,8 +163,11 @@ pub fn run() {
             });
         })
         .setup(|app| {
+            init_logging(app.path().app_log_dir().ok().as_deref());
+            tracing::info!(version = env!("CARGO_PKG_VERSION"), "VIBDL starting");
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;
+            migrate_old_config(&config_dir);
             let settings_path = config_dir.join("settings.json");
             let loaded = settings::load(&settings_path).unwrap_or_else(|e| {
                 tracing::error!("could not read settings, using defaults: {e}");
@@ -197,6 +234,7 @@ pub fn run() {
             commands::library_export,
             commands::library_keys,
             commands::pick_folder,
+            commands::open_log_folder,
             commands::library_delete_many,
             commands::library_export_selected,
             commands::library_refresh_many,

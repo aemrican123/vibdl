@@ -4,6 +4,7 @@
 
 pub mod danbooru;
 pub mod gelbooru;
+pub mod moebooru;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -99,6 +100,9 @@ pub struct ProviderInfo {
     pub name: &'static str,
     /// Whether an account (user + API key) is required to search.
     pub requires_account: bool,
+    /// Whether VIBDL sends an account to this board at all (if not, Settings
+    /// hides the account fields).
+    pub uses_account: bool,
     /// Label for the account field ("Username", "User ID").
     pub account_label: &'static str,
     /// Where the user finds their API key.
@@ -110,41 +114,63 @@ pub struct ProviderInfo {
     pub allows_batch: bool,
 }
 
-pub const PROVIDERS: [ProviderInfo; 3] = [
+/// Boards in the picker. Removed (2026-11-14) because they block app access:
+/// Gelbooru (hotlink protection), Konachan and Safebooru/donmai (HTTP 403).
+/// Their code stays, and their ids stay in `RETIRED` so library items from
+/// them keep working.
+pub const PROVIDERS: [ProviderInfo; 4] = [
     ProviderInfo {
         id: danbooru::PROVIDER_ID,
         name: "Danbooru",
         requires_account: false,
+        uses_account: true,
         account_label: "Username",
         key_help: "Optional. Danbooru → My Account → API Key. Works without an account (2-tag searches).",
         warning: None,
         allows_batch: true,
     },
     ProviderInfo {
-        id: gelbooru::GELBOORU.id,
-        name: "Gelbooru",
-        requires_account: true,
+        id: moebooru::YANDERE.id,
+        name: "yande.re",
+        requires_account: false,
+        uses_account: false,
+        account_label: "Username",
+        key_help: "No account needed.",
+        warning: None,
+        allows_batch: true,
+    },
+    ProviderInfo {
+        id: gelbooru::SAFEBOORU_ORG.id,
+        name: "Safebooru.org",
+        requires_account: false,
+        uses_account: false,
         account_label: "User ID",
-        key_help: "Gelbooru → My Account → Options (the &api_key=…&user_id=… line).",
-        warning: Some(
-            "Gelbooru's hotlink protection blocks thumbnails, previews and downloads for apps. Search and metadata only.",
-        ),
-        // Gelbooru TOS forbids automated retrieval; never batch (docs/PLAN.md).
-        allows_batch: false,
+        key_help: "No account needed.",
+        warning: None,
+        allows_batch: true,
     },
     ProviderInfo {
         id: gelbooru::RULE34.id,
         name: "Rule34",
         requires_account: true,
+        uses_account: true,
         account_label: "User ID",
         key_help: "rule34.xxx → My Account → Options (API access credentials).",
-        warning: Some("Untested: image access and tag categories not yet verified."),
-        allows_batch: false,
+        warning: Some("Adult content board. Needs your own API key."),
+        allows_batch: true,
     },
 ];
 
 pub fn provider_info(id: &str) -> Option<&'static ProviderInfo> {
     PROVIDERS.iter().find(|p| p.id == id)
+}
+
+/// Board ids that may appear in an existing library but aren't selectable.
+pub const RETIRED: [&str; 3] = ["gelbooru", "konachan", "safebooru"];
+
+/// Any board id that can appear in the library (current or retired).
+pub fn is_known_board(id: &str) -> bool {
+    provider_info(id).is_some() || RETIRED.contains(&id)
 }
 
 pub const ALL_RATINGS: [&str; 4] = ["general", "sensitive", "questionable", "explicit"];
@@ -229,7 +255,21 @@ mod tests {
     #[test]
     fn provider_list_is_consistent() {
         assert!(provider_info("danbooru").is_some());
-        assert!(provider_info("gelbooru").is_some_and(|p| p.warning.is_some()));
+        assert!(provider_info("gelbooru").is_none(), "retired");
+        assert!(is_known_board("gelbooru") && is_known_board("danbooru") && !is_known_board("nope"));
         assert!(provider_info("nope").is_none());
+        let mut ids: Vec<&str> = PROVIDERS.iter().map(|p| p.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), PROVIDERS.len(), "ids are unique");
+        for p in PROVIDERS {
+            // Ids are used in thumbnail keys and folder names.
+            assert!(
+                p.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) && p.id.len() <= 16,
+                "{}",
+                p.id
+            );
+            assert!(crate::browse::thumbs::make_key(p.id, "0123456789abcdef0123456789abcdef").is_some(), "{}", p.id);
+        }
     }
 }

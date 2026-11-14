@@ -25,6 +25,8 @@ export interface ProviderInfo {
   id: string;
   name: string;
   requires_account: boolean;
+  /** False = VIBDL never sends an account to this board (fields hidden). */
+  uses_account: boolean;
   account_label: string;
   key_help: string;
   warning: string | null;
@@ -312,6 +314,7 @@ export const api = {
   /** Native folder dialog; null if cancelled. */
   pickFolder: (title: string, start?: string | null) =>
     invoke<string | null>("pick_folder", { title, start: start || null }),
+  openLogFolder: () => invoke<void>("open_log_folder"),
   browseSearch: (tags: string, page: number) => invoke<BrowsePage>("browse_search", { tags, page }),
 };
 

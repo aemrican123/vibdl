@@ -1,0 +1,42 @@
+name: Bug report
+description: Something doesn't work the way it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste your API key or user ID.** Check logs and screenshots before you attach them.
+  - type: input
+    id: version
+    attributes:
+      label: VIBDL version
+      description: From the installer's file name, or Windows Settings → Apps → VIBDL.
+      placeholder: "0.4.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: board
+    attributes:
+      label: Board
+      options: [Danbooru, yande.re, Safebooru.org, Rule34, Library (offline), Not board-specific]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Search for ...
+        2. Click ...
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: Settings → Open log folder → vibdl.log. Paste only the relevant lines.
+      render: text

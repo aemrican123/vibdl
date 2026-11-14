@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "VIBDL",
-  "version": "0.2.0",
-  "identifier": "com.vibdl.app",
+  "version": "0.4.0",
+  "identifier": "io.github.aemrican123.vibdl",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -20,7 +20,19 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob: thumb: library: http://thumb.localhost http://library.localhost",
+        "media-src": "'self' blob: media: thumb: library: http://media.localhost http://thumb.localhost http://library.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "font-src": "'self' data:",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "frame-ancestors": "'none'"
+      },
+      "devCsp": null
     }
   },
   "bundle": {
@@ -35,7 +47,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "publisher": "VIBDL (personal build)",
+    "publisher": "aemrican123",
     "shortDescription": "Vibecoded Image Board Downloader Library",
     "longDescription": "Browse imageboards, download originals with their metadata, and organize them in a searchable offline library.",
     "category": "Photography",
@@ -44,6 +56,9 @@
         "installMode": "currentUser",
         "displayLanguageSelector": false
       }
-    }
+    },
+    "copyright": "Copyright (c) 2026 aemrican123. MIT OR Apache-2.0.",
+    "homepage": "https://github.com/aemrican123/vibdl",
+    "license": "MIT OR Apache-2.0"
   }
 }

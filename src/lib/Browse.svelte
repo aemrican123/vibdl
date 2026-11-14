@@ -42,6 +42,12 @@
   let queued = $state<Set<string>>(new Set());
   let queueMsg = $state<{ kind: "ok" | "err"; text: string } | null>(null);
 
+  // Pages in a row where every post was hidden by the rating filter; after a
+  // few, stop paging instead of fetching forever.
+  let hiddenStreak = 0;
+  let allHidden = $state(false);
+  const MAX_HIDDEN_PAGES = 3;
+
   // Bumped on every new search so late responses from an old search are ignored.
   let generation = 0;
 
@@ -57,6 +63,8 @@
     selected = null;
     error = null;
     thumbRetries = {};
+    hiddenStreak = 0;
+    allHidden = false;
     picked = new Set();
     lastPicked = null;
     savePref(`browse.query.${provider}`, activeQuery);
@@ -153,6 +161,15 @@
       hasMore = page.has_more;
       depthLimited = page.depth_limited;
       nextPage = page.page + 1;
+      if (page.posts.length === 0 && page.hidden_by_rating > 0) {
+        hiddenStreak++;
+        if (hiddenStreak >= MAX_HIDDEN_PAGES) {
+          hasMore = false;
+          allHidden = true;
+        }
+      } else if (page.posts.length > 0) {
+        hiddenStreak = 0;
+      }
       markDownloaded(fresh);
     } catch (err) {
       if (gen !== generation) return;
@@ -357,6 +374,11 @@
       {#snippet after()}
         {#if error}
           <p class="err">{error} <button class="ghost" onclick={() => { error = null; hasMore = true; loadMore(); }}>Retry</button></p>
+        {:else if allHidden}
+          <p class="note">
+            The last {MAX_HIDDEN_PAGES} pages only had posts with ratings you've hidden.
+            Change <strong>Settings → Content ratings</strong>, or search with different tags.
+          </p>
         {:else if depthLimited}
           <p class="note">Reached this board's search depth limit. Add tags to narrow the search.</p>
         {:else if activeQuery !== null && !hasMore && !loading}

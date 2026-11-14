@@ -83,7 +83,8 @@ pub fn is_valid_key(key: &str) -> bool {
         return false;
     };
     !provider.is_empty()
-        && provider.chars().all(|c| c.is_ascii_lowercase())
+        && provider.len() <= 16
+        && provider.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         && md5.len() == 32
         && md5.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
@@ -395,6 +396,7 @@ mod tests {
         assert!(!is_valid_key("../etc-0123456789abcdef0123456789abcdef"));
         assert!(!is_valid_key("gelbooru-0123456789abcdef0123456789abcdeg"));
         assert!(!is_valid_key("gelbooru"));
+        assert!(make_key("rule34", "0123456789abcdef0123456789abcdef").is_some(), "digits allowed in board ids");
         assert_eq!(
             sample_key("gelbooru", "0123456789abcdef0123456789abcdef").as_deref(),
             Some("gelbooru-0123456789abcdef0123456789abcdef-s")
