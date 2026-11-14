@@ -160,7 +160,7 @@ pub fn run() {
                 default_library_dir,
                 library: Mutex::new(None),
                 thumb_gen: tokio::sync::Semaphore::new(2),
-                queue: queue::Queue::default(),
+                queue: queue::Queue::persistent(config_dir.join("queue.json")),
                 suggest_cache: Mutex::new(Default::default()),
             });
             tauri::async_runtime::spawn(commands::queue_worker(app.handle().clone()));
@@ -194,6 +194,10 @@ pub fn run() {
             commands::library_check,
             commands::library_remove_missing,
             commands::library_export,
+            commands::library_keys,
+            commands::library_delete_many,
+            commands::library_export_selected,
+            commands::library_refresh_many,
             commands::queue_add,
             commands::queue_list,
             commands::queue_cancel,

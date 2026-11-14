@@ -218,6 +218,21 @@ pub fn search(db: &Db, q: &str, sort: Sort, offset: u32, allowed: &[String]) -> 
     })
 }
 
+/// (provider, remote_id) of every item matching `q` (for "select all").
+pub const MAX_KEYS: u32 = 50_000;
+
+pub fn keys(db: &Db, q: &str, allowed: &[String]) -> AppResult<Vec<(String, String)>> {
+    let terms = parse(q);
+    let (cond, params) = where_clause(&terms, allowed);
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT p.provider, p.remote_id FROM posts p WHERE {cond} ORDER BY p.id LIMIT {MAX_KEYS}"
+        ))?;
+        stmt.query_map(params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect()
+    })
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Facet {
     pub name: String,
@@ -491,6 +506,14 @@ mod tests {
         assert!(suggest(&db, "%", None, 10).unwrap().is_empty());
         assert_eq!(split_category("-char:ch"), (Some("character"), "ch".into()));
         assert_eq!(split_category("re:ze"), (None, "re:ze".into()));
+    }
+
+    #[test]
+    fn keys_follow_filters_and_ratings() {
+        let db = seeded();
+        let k = keys(&db, "char:char_x", &all()).unwrap();
+        assert_eq!(k, vec![("danbooru".into(), "1".into()), ("danbooru".into(), "2".into())]);
+        assert_eq!(keys(&db, "char:char_x", &["general".to_string()]).unwrap().len(), 1);
     }
 
     #[test]

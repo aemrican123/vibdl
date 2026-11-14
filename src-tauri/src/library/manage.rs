@@ -285,10 +285,7 @@ pub fn render_name(pattern: &str, d: &super::LibraryDetails) -> String {
     name
 }
 
-/// Copy the items matching `q` into `dest` with readable names. Never
-/// overwrites: an existing file with the same name and size is skipped,
-/// otherwise a " (2)" suffix is added.
-pub fn export(lib: &Library, q: &str, allowed: &[String], dest: &Path, pattern: &str) -> AppResult<ExportReport> {
+fn check_dest(lib: &Library, dest: &Path) -> AppResult<()> {
     if !dest.is_absolute() {
         return Err(AppError::Settings("Use a full folder path for the export destination.".into()));
     }
@@ -296,52 +293,115 @@ pub fn export(lib: &Library, q: &str, allowed: &[String], dest: &Path, pattern: 
         return Err(AppError::Settings("Choose a folder outside VIBDL's internal .vibdl folder.".into()));
     }
     std::fs::create_dir_all(dest)?;
+    Ok(())
+}
+
+/// Copy one item; `Ok(false)` = an identical-size file with that name was
+/// already there (skipped).
+fn copy_one(
+    lib: &Library,
+    d: &super::LibraryDetails,
+    dest: &Path,
+    pattern: &str,
+    used: &mut HashSet<PathBuf>,
+) -> AppResult<bool> {
+    let it = &d.item;
+    let src = storage::resolve_inside(&lib.root, Path::new(&it.local_path))?;
+    let base = render_name(pattern, d);
+    let mut n = 1;
+    loop {
+        let name = if n == 1 { format!("{base}.{}", it.file_ext) } else { format!("{base} ({n}).{}", it.file_ext) };
+        let target = dest.join(name);
+        if used.contains(&target) {
+            n += 1;
+            continue;
+        }
+        if target.exists() {
+            if target.metadata()?.len() == it.file_size {
+                used.insert(target);
+                return Ok(false);
+            }
+            n += 1;
+            continue;
+        }
+        std::fs::copy(&src, &target)?;
+        used.insert(target);
+        return Ok(true);
+    }
+}
+
+fn record(report: &mut ExportReport, key: &(String, String), r: AppResult<bool>) {
+    match r {
+        Ok(true) => report.copied += 1,
+        Ok(false) => report.skipped_existing += 1,
+        Err(e) if report.errors.len() < 20 => report.errors.push(format!("{} #{}: {e}", key.0, key.1)),
+        Err(_) => {}
+    }
+}
+
+/// Copy the items matching `q` into `dest` with readable names. Never
+/// overwrites: an existing file with the same name and size is skipped,
+/// otherwise a " (2)" suffix is added.
+pub fn export(lib: &Library, q: &str, allowed: &[String], dest: &Path, pattern: &str) -> AppResult<ExportReport> {
+    let keys = super::keys(&lib.db, q, allowed)?;
+    export_selected(lib, &keys, allowed, dest, pattern)
+}
+
+/// Same as `export`, for an explicit list of (provider, remote_id).
+pub fn export_selected(
+    lib: &Library,
+    keys: &[(String, String)],
+    allowed: &[String],
+    dest: &Path,
+    pattern: &str,
+) -> AppResult<ExportReport> {
+    check_dest(lib, dest)?;
     let pattern = if pattern.trim().is_empty() { DEFAULT_PATTERN } else { pattern };
     let mut report = ExportReport { dest: dest.display().to_string(), ..Default::default() };
     let mut used: HashSet<PathBuf> = HashSet::new();
-    let mut offset = 0;
-    loop {
-        let page = super::search(&lib.db, q, super::Sort::Oldest, offset, allowed)?;
-        if page.items.is_empty() {
-            break;
-        }
-        offset += page.items.len() as u32;
-        for it in page.items {
-            let result = (|| -> AppResult<bool> {
-                let d = super::details(&lib.db, &it.provider, &it.remote_id)?
-                    .ok_or_else(|| AppError::Parse("item vanished".into()))?;
-                let src = storage::resolve_inside(&lib.root, Path::new(&it.local_path))?;
-                let base = render_name(pattern, &d);
-                let mut n = 1;
-                loop {
-                    let name = if n == 1 { format!("{base}.{}", it.file_ext) } else { format!("{base} ({n}).{}", it.file_ext) };
-                    let target = dest.join(name);
-                    if used.contains(&target) {
-                        n += 1;
-                        continue;
-                    }
-                    if target.exists() {
-                        if target.metadata()?.len() == it.file_size {
-                            used.insert(target);
-                            return Ok(false);
-                        }
-                        n += 1;
-                        continue;
-                    }
-                    std::fs::copy(&src, &target)?;
-                    used.insert(target);
-                    return Ok(true);
+    for key in keys {
+        let r = super::details(&lib.db, &key.0, &key.1).and_then(|d| {
+            let d = d.ok_or_else(|| AppError::Parse("not in the library".into()))?;
+            if !d.item.rating.as_ref().is_some_and(|r| allowed.contains(r)) {
+                return Err(AppError::Settings("rating hidden by your settings".into()));
+            }
+            copy_one(lib, &d, dest, pattern, &mut used)
+        });
+        record(&mut report, key, r);
+    }
+    Ok(report)
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct BulkReport {
+    pub done: usize,
+    pub failed: usize,
+    pub errors: Vec<String>,
+}
+
+/// Delete several items (Recycle Bin). Continues past individual failures.
+pub fn delete_many(lib: &Library, keys: &[(String, String)], mode: DeleteMode) -> BulkReport {
+    let mut r = BulkReport::default();
+    for (provider, id) in keys {
+        let res = lib
+            .db
+            .find(provider, id, None)
+            .and_then(|e| {
+                e.filter(|e| &e.provider == provider && &e.remote_id == id)
+                    .ok_or_else(|| AppError::Settings("not in the library".into()))
+            })
+            .and_then(|e| delete(lib, &e, mode));
+        match res {
+            Ok(_) => r.done += 1,
+            Err(e) => {
+                r.failed += 1;
+                if r.errors.len() < 20 {
+                    r.errors.push(format!("{provider} #{id}: {e}"));
                 }
-            })();
-            match result {
-                Ok(true) => report.copied += 1,
-                Ok(false) => report.skipped_existing += 1,
-                Err(e) if report.errors.len() < 20 => report.errors.push(format!("{} #{}: {e}", it.provider, it.remote_id)),
-                Err(_) => {}
             }
         }
     }
-    Ok(report)
+    r
 }
 
 #[cfg(test)]
@@ -453,6 +513,23 @@ mod tests {
         export(&lib, "", &all(), out2.path(), "{artist}").unwrap();
         assert!(out2.path().join("some artist (2).png").exists());
         assert!(export(&lib, "", &all(), Path::new("relative"), "").is_err());
+    }
+
+    #[test]
+    fn bulk_delete_and_export_selected() {
+        let (_d, lib) = lib_with_images();
+        let keys = vec![("danbooru".to_string(), "1".to_string()), ("danbooru".to_string(), "404".to_string())];
+        let out = tempfile::tempdir().unwrap();
+        let r = export_selected(&lib, &keys, &all(), out.path(), "{id}").unwrap();
+        assert_eq!((r.copied, r.errors.len()), (1, 1));
+        assert!(out.path().join("1.png").exists());
+        // Rating filter applies to exports too.
+        let r = export_selected(&lib, &keys[..1], &["explicit".to_string()], out.path(), "x{id}").unwrap();
+        assert_eq!(r.copied, 0);
+
+        let r = delete_many(&lib, &keys, DeleteMode::Permanent);
+        assert_eq!((r.done, r.failed), (1, 1));
+        assert_eq!(lib.db.post_count().unwrap(), 2);
     }
 
     #[test]

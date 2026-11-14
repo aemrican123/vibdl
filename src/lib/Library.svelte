@@ -1,14 +1,20 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import LibraryTools from "$lib/LibraryTools.svelte";
   import LocalPanel from "$lib/LocalPanel.svelte";
   import TagInput from "$lib/TagInput.svelte";
   import VirtualGrid from "$lib/VirtualGrid.svelte";
+  import SavedSearches from "$lib/SavedSearches.svelte";
+  import Viewer, { type ViewerMedia } from "$lib/Viewer.svelte";
   import { isTyping, loadPref, savePref } from "$lib/prefs";
   import {
     api,
     errorText,
+    isVideoExt,
+    libraryFileUrl,
     libraryThumbUrl,
+    libraryVideoUrl,
     type Facets,
     type LibraryItem,
     type LibrarySort,
@@ -53,6 +59,9 @@
     error = null;
     selected = null;
     failed = new Set();
+    picked = new Set();
+    anchor = null;
+    bulk = "none";
     savePref("library.query", activeQuery);
     savePref("library.sort", sort);
     grid?.toTop();
@@ -93,9 +102,181 @@
     search();
   }
 
+  // ---- Multi-select & bulk actions
+  const keyOf = (it: { provider: string; remote_id: string }) => `${it.provider}:${it.remote_id}`;
+  let picked = $state<Set<string>>(new Set());
+  let anchor: number | null = null;
+  let selectMode = $state(false);
+  let bulk = $state<"none" | "delete" | "export">("none");
+  let busy = $state(false);
+  let bulkMsg = $state<{ kind: "ok" | "err"; text: string } | null>(null);
+  let progress = $state<{ done: number; total: number } | null>(null);
+  let exportDest = $state(loadPref("library.exportDest", ""));
+  let exportPattern = $state(loadPref("library.exportPattern", "{artist} - {copyright} - {board} {id}"));
+
+  const pickedList = () =>
+    [...picked].map((k) => {
+      const i = k.indexOf(":");
+      return { provider: k.slice(0, i), remote_id: k.slice(i + 1) };
+    });
+
+  function onTile(e: MouseEvent, it: LibraryItem, i: number) {
+    if (e.shiftKey) {
+      const si = indexOf(selected);
+      const from = anchor ?? (si >= 0 ? si : i);
+      const [a, b] = [Math.min(from, i), Math.max(from, i)];
+      const next = new Set(picked);
+      for (const x of items.slice(a, b + 1)) next.add(keyOf(x));
+      picked = next;
+      return;
+    }
+    anchor = i;
+    if (e.ctrlKey || e.metaKey || selectMode) {
+      const next = new Set(picked);
+      const k = keyOf(it);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      picked = next;
+      return;
+    }
+    selected = it;
+  }
+
+  function clearPicked() {
+    picked = new Set();
+    bulk = "none";
+  }
+
+  async function selectAllMatching() {
+    try {
+      const keys = await api.libraryKeys(activeQuery);
+      picked = new Set(keys.map(([p, r]) => `${p}:${r}`));
+    } catch (e) {
+      bulkMsg = { kind: "err", text: errorText(e) };
+    }
+  }
+
+  const plural = (n: number, w: string) => `${n.toLocaleString()} ${w}${n === 1 ? "" : "s"}`;
+
+  async function bulkDelete() {
+    busy = true;
+    bulkMsg = null;
+    try {
+      const r = await api.libraryDeleteMany(pickedList());
+      bulkMsg = {
+        kind: r.failed ? "err" : "ok",
+        text: `Moved ${plural(r.done, "item")} to the Recycle Bin${r.failed ? `; ${r.failed} failed: ${r.errors[0] ?? ""}` : "."}`,
+      };
+      clearPicked();
+      search();
+    } catch (e) {
+      bulkMsg = { kind: "err", text: errorText(e) };
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function bulkExport() {
+    busy = true;
+    bulkMsg = null;
+    savePref("library.exportDest", exportDest);
+    savePref("library.exportPattern", exportPattern);
+    try {
+      const r = await api.libraryExportSelected(pickedList(), exportDest, exportPattern);
+      bulkMsg = {
+        kind: r.errors.length ? "err" : "ok",
+        text: `Copied ${plural(r.copied, "file")}${r.skipped_existing ? `, ${r.skipped_existing} already there` : ""} → ${r.dest}${r.errors.length ? ` · ${r.errors.length} error(s): ${r.errors[0]}` : ""}`,
+      };
+      bulk = "none";
+    } catch (e) {
+      bulkMsg = { kind: "err", text: errorText(e) };
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function bulkRefresh() {
+    busy = true;
+    bulkMsg = null;
+    progress = { done: 0, total: picked.size };
+    try {
+      const r = await api.libraryRefreshMany(pickedList());
+      bulkMsg = {
+        kind: r.failed ? "err" : "ok",
+        text: `Refreshed ${plural(r.done, "item")}${r.failed ? `; ${r.failed} failed: ${r.errors[0] ?? ""}` : "."}`,
+      };
+      search();
+    } catch (e) {
+      bulkMsg = { kind: "err", text: errorText(e) };
+    } finally {
+      busy = false;
+      progress = null;
+    }
+  }
+
+  function bulkReveal() {
+    const first = items.find((x) => picked.has(keyOf(x)));
+    if (first) api.openLocal(first.local_path, true).catch((e) => (bulkMsg = { kind: "err", text: errorText(e) }));
+  }
+
+  let unlisten: UnlistenFn | null = null;
+  listen<{ done: number; total: number }>("bulk-progress", (e) => {
+    if (progress) progress = e.payload;
+  }).then((u) => (unlisten = u));
+  onDestroy(() => unlisten?.());
+
+  // Full-screen viewer.
+  let viewerIndex = $state<number | null>(null);
+  const indexOf = (it: LibraryItem | null) =>
+    it ? items.findIndex((x) => x.provider === it.provider && x.remote_id === it.remote_id) : -1;
+
+  function openViewer(i: number) {
+    if (i < 0 || i >= items.length) return;
+    selected = items[i];
+    viewerIndex = i;
+  }
+
+  async function resolveMedia(i: number): Promise<ViewerMedia | null> {
+    const it = items[i];
+    if (!it) return null;
+    const title = `${it.provider} #${it.remote_id}`;
+    const subtitle = `${it.width ?? "?"}×${it.height ?? "?"} · ${it.file_ext.toUpperCase()}`;
+    const placeholder = libraryThumbUrl(it);
+    return isVideoExt(it.file_ext)
+      ? { kind: "video", src: libraryVideoUrl(it), placeholder, title, subtitle }
+      : { kind: "image", src: libraryFileUrl(it), placeholder, title, subtitle };
+  }
+
+  function viewerMove(i: number) {
+    viewerIndex = i;
+    selected = items[i];
+    grid?.reveal(i);
+    if (i >= items.length - 5) loadMore();
+  }
+
   // Keyboard: "/" filter · Esc close · ←/→ previous/next item.
   function onKey(e: KeyboardEvent) {
-    if (!active || view !== "gallery" || isTyping(e)) return;
+    if (!active || view !== "gallery" || viewerIndex !== null || isTyping(e)) return;
+    if (e.key === "Delete" && picked.size && !busy) {
+      e.preventDefault();
+      bulk = "delete";
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
+      e.preventDefault();
+      selectAllMatching();
+      return;
+    }
+    if (e.key === "Escape" && (bulk !== "none" || picked.size)) {
+      if (bulk !== "none") bulk = "none";
+      else clearPicked();
+      return;
+    }
+    if (e.key === "Enter" && selected) {
+      e.preventDefault();
+      openViewer(indexOf(selected));
+      return;
+    }
     if (e.key === "/") {
       e.preventDefault();
       searchBox?.focus();
@@ -140,6 +321,16 @@
 
 <svelte:window onkeydown={onKey} />
 
+{#if viewerIndex !== null && active}
+  <Viewer
+    count={items.length}
+    index={viewerIndex}
+    resolve={resolveMedia}
+    onindex={viewerMove}
+    onclose={() => (viewerIndex = null)}
+  />
+{/if}
+
 <div class="lib">
   <form class="bar" onsubmit={search}>
     <TagInput
@@ -157,6 +348,24 @@
       <option value="file_size">Largest files</option>
     </select>
     <button type="submit">Filter</button>
+    <SavedSearches
+      scope="library"
+      query={activeQuery}
+      onrun={(q) => {
+        query = q;
+        search();
+      }}
+    />
+    <button
+      type="button"
+      class="ghost"
+      class:on={selectMode}
+      title="Pick several items (or Ctrl+click / Shift+click tiles)"
+      onclick={() => {
+        selectMode = !selectMode;
+        if (!selectMode) clearPicked();
+      }}>{selectMode ? "Done" : "Select"}</button
+    >
     <div class="seg" role="tablist">
       <button type="button" class:on={view === "gallery"} onclick={() => (view = "gallery")}>Gallery</button>
       <button type="button" class:on={view === "tools"} onclick={() => (view = "tools")}>Tools</button>
@@ -170,6 +379,45 @@
     {/each}
     {#if loading}<span class="dim">· loading…</span>{/if}
   </div>
+
+  {#if view === "gallery" && (picked.size || selectMode)}
+    <div class="selbar">
+      <strong>{picked.size.toLocaleString()} selected</strong>
+      <button class="ghost" disabled={busy} onclick={selectAllMatching}>Select all {total.toLocaleString()}</button>
+      <button class="ghost" disabled={busy || !picked.size} onclick={clearPicked}>Clear</button>
+      <span class="sep"></span>
+      <button class="ghost" disabled={busy || !picked.size} onclick={() => (bulk = bulk === "export" ? "none" : "export")}>Export / copy…</button>
+      <button class="ghost" disabled={busy || !picked.size} onclick={bulkRefresh} title="Re-download tags and info from each board">Refresh metadata</button>
+      <button class="ghost" disabled={busy || !picked.size} onclick={bulkReveal}>Show in folder</button>
+      <button class="danger" disabled={busy || !picked.size} onclick={() => (bulk = "delete")}>Delete…</button>
+      <span class="dim">Ctrl+click toggle · Shift+click range · Ctrl+A all · Del delete</span>
+    </div>
+    {#if bulk === "delete"}
+      <div class="confirm">
+        Move <strong>{plural(picked.size, "item")}</strong> (image, metadata file and thumbnail) to the
+        <strong>Recycle Bin</strong> and remove them from the library?
+        <button class="danger-solid" disabled={busy} onclick={bulkDelete}>{busy ? "Deleting…" : "Move to Recycle Bin"}</button>
+        <button class="ghost" disabled={busy} onclick={() => (bulk = "none")}>Cancel</button>
+      </div>
+    {:else if bulk === "export"}
+      <form
+        class="confirm export"
+        onsubmit={(e) => {
+          e.preventDefault();
+          bulkExport();
+        }}
+      >
+        <label>Copy {plural(picked.size, "item")} to <input bind:value={exportDest} placeholder="D:\Exports\VIBDL" spellcheck="false" /></label>
+        <label>named <input bind:value={exportPattern} spellcheck="false" title="Tokens: {'{artist} {character} {copyright} {board} {id} {md5} {rating}'}" /></label>
+        <button type="submit" disabled={busy || !exportDest.trim()}>{busy ? "Copying…" : "Copy"}</button>
+        <button type="button" class="ghost" onclick={() => (bulk = "none")}>Cancel</button>
+      </form>
+    {/if}
+  {/if}
+  {#if progress}<p class="bulkmsg">Refreshing {progress.done} / {progress.total}…</p>{/if}
+  {#if bulkMsg}
+    <p class={`bulkmsg ${bulkMsg.kind}`}>{bulkMsg.text} <button class="x" onclick={() => (bulkMsg = null)} aria-label="Dismiss">✕</button></p>
+  {/if}
 
   {#if view === "tools"}
     <div class="toolswrap">
@@ -213,11 +461,14 @@
           </p>
         {/if}
       {/snippet}
-      {#snippet tile(it)}
+      {#snippet tile(it, i)}
         <button
           class="tile"
           class:sel={selected?.provider === it.provider && selected?.remote_id === it.remote_id}
-          onclick={() => (selected = it)}
+          class:picked={picked.has(keyOf(it))}
+          onmousedown={(e) => e.shiftKey && e.preventDefault()}
+          onclick={(e) => onTile(e, it, i)}
+          ondblclick={() => openViewer(i)}
           title={`${it.provider} #${it.remote_id} · ${it.width ?? "?"}×${it.height ?? "?"}`}
         >
           {#if !failed.has(it.md5)}
@@ -232,6 +483,7 @@
           {/if}
           <span class="badge">{it.file_ext}</span>
           <span class="board">{it.provider}</span>
+          {#if picked.has(keyOf(it))}<span class="mark">✓</span>{/if}
         </button>
       {/snippet}
       {#snippet after()}
@@ -240,7 +492,13 @@
     </VirtualGrid>
 
     {#if selected}
-      <LocalPanel item={selected} onclose={() => (selected = null)} onfilter={filterBy} ondeleted={removed} />
+      <LocalPanel
+        item={selected}
+        onclose={() => (selected = null)}
+        onfilter={filterBy}
+        ondeleted={removed}
+        onview={() => openViewer(indexOf(selected))}
+      />
     {/if}
   </div>
 </div>
@@ -297,6 +555,45 @@
     position: absolute; right: 4px; bottom: 4px; padding: 1px 5px; border-radius: 4px;
     background: rgba(0, 0, 0, 0.65); color: #ddd; font-size: 0.7rem; text-transform: uppercase;
   }
+  .tile.picked { border-color: #8fa0ff; box-shadow: inset 0 0 0 2px #8fa0ff; }
+  .tile.picked img { opacity: 0.75; }
+  .mark {
+    position: absolute; left: 4px; top: 4px; width: 20px; height: 20px; border-radius: 10px;
+    background: #4b5bd6; color: #fff; font-size: 0.75rem; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .selbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 16px 8px;
+    padding: 8px 12px; background: #1d2030; border: 1px solid #343a63; border-radius: 8px; font-size: 0.86rem;
+  }
+  .selbar button, .confirm button {
+    padding: 5px 10px; border-radius: 6px; border: 1px solid #4b5bd6; background: #4b5bd6; color: #fff;
+    font: inherit; font-size: 0.84rem; cursor: pointer;
+  }
+  .selbar button.ghost, .confirm button.ghost, .bar button.ghost {
+    background: transparent; border-color: #4a4b55; color: #c9c9cf;
+  }
+  .bar button.ghost { padding: 8px 12px; border-radius: 6px; font: inherit; cursor: pointer; }
+  .bar button.ghost.on { border-color: #8fa0ff; color: #fff; }
+  .selbar button.danger { background: transparent; border-color: #5a2a2a; color: #f07b7b; }
+  .confirm button.danger-solid { background: #b8433f; border-color: #b8433f; }
+  .selbar button:disabled, .confirm button:disabled { opacity: 0.45; cursor: default; }
+  .sep { width: 1px; height: 20px; background: #343a63; }
+  .confirm {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 16px 8px; padding: 8px 12px;
+    background: #2a1d1f; border: 1px solid #5a2a2a; border-radius: 8px; font-size: 0.86rem;
+  }
+  .confirm.export { background: #1d2030; border-color: #343a63; }
+  .confirm label { display: flex; gap: 6px; align-items: center; }
+  .confirm input {
+    padding: 5px 8px; background: #15161a; color: inherit; border: 1px solid #353640; border-radius: 5px;
+    font: inherit; font-size: 0.84rem; width: 220px;
+  }
+  .bulkmsg { margin: 0 18px 8px; font-size: 0.85rem; color: #9a9ba3; }
+  .bulkmsg.ok { color: #6fd39a; }
+  .bulkmsg.err { color: #f07b7b; }
+  .bulkmsg .x { background: none; border: none; color: inherit; cursor: pointer; }
+  .tile { user-select: none; }
   .board {
     position: absolute; left: 4px; bottom: 4px; padding: 1px 5px; border-radius: 4px;
     background: rgba(0, 0, 0, 0.55); color: #bbb; font-size: 0.65rem; text-transform: capitalize;

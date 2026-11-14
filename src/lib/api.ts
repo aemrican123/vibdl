@@ -1,6 +1,13 @@
 // Typed wrappers around the Rust commands in src-tauri/src/commands.rs.
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
+export interface SavedSearch {
+  name: string;
+  /** Board id, or "library". */
+  scope: string;
+  query: string;
+}
+
 export interface Settings {
   age_confirmed: boolean;
   library_dir: string | null;
@@ -11,6 +18,7 @@ export interface Settings {
   accounts: Record<string, string>;
   api_min_interval_ms: number;
   download_concurrency: number;
+  saved_searches: SavedSearch[];
 }
 
 export interface ProviderInfo {
@@ -117,6 +125,8 @@ export interface PostDetails {
   preview_is_original: boolean;
   /** Stream key for mp4/webm posts (media scheme). */
   video_key: string | null;
+  /** Full original (still images) for the viewer, fetched only on request. */
+  original_key: string | null;
   tags: CategorizedTags;
   tag_lookup_error: string | null;
   tags_looked_up: number;
@@ -216,6 +226,12 @@ export interface CheckReport {
   missing: LocalEntry[];
 }
 
+export interface BulkReport {
+  done: number;
+  failed: number;
+  errors: string[];
+}
+
 export interface ExportReport {
   copied: number;
   skipped_existing: number;
@@ -286,6 +302,13 @@ export const api = {
     invoke<ExportReport>("library_export", { q, dest, pattern }),
   suggestTags: (prefix: string) => invoke<Suggestion[]>("suggest_tags", { prefix }),
   librarySuggest: (token: string) => invoke<Suggestion[]>("library_suggest", { token }),
+  libraryKeys: (q: string) => invoke<[string, string][]>("library_keys", { q }),
+  libraryDeleteMany: (items: { provider: string; remote_id: string }[]) =>
+    invoke<BulkReport>("library_delete_many", { items }),
+  libraryExportSelected: (items: { provider: string; remote_id: string }[], dest: string, pattern: string) =>
+    invoke<ExportReport>("library_export_selected", { items, dest, pattern }),
+  libraryRefreshMany: (items: { provider: string; remote_id: string }[]) =>
+    invoke<BulkReport>("library_refresh_many", { items }),
   browseSearch: (tags: string, page: number) => invoke<BrowsePage>("browse_search", { tags, page }),
 };
 

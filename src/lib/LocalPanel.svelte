@@ -17,11 +17,13 @@
     onclose,
     onfilter,
     ondeleted,
+    onview,
   }: {
     item: LibraryItem;
     onclose: () => void;
     onfilter: (term: string, add: boolean) => void;
     ondeleted?: (item: LibraryItem) => void;
+    onview?: () => void;
   } = $props();
 
   let confirmDelete = $state(false);
@@ -111,6 +113,9 @@
   </div>
 
   <div class="preview">
+    {#if onview}
+      <button class="viewbtn" onclick={onview} title="Open full screen (Enter)" aria-label="Open full screen">⤢</button>
+    {/if}
     {#if isVideoExt(item.file_ext)}
       <!-- svelte-ignore a11y_media_has_caption -->
       <video controls loop preload="metadata" poster={libraryThumbUrl(item)} src={libraryVideoUrl(item)}></video>
@@ -121,6 +126,7 @@
         src={libraryFileUrl(item)}
         alt={`${item.provider} ${item.remote_id}`}
         onload={() => (fullLoaded = true)}
+        ondblclick={onview}
         onerror={() => (fullFailed = true)}
       />
     {:else}
@@ -223,6 +229,10 @@
     background: #111216; border-radius: 6px; overflow: hidden;
   }
   .preview img { max-width: 100%; max-height: 520px; object-fit: contain; display: block; }
+  .preview .viewbtn {
+    position: absolute; right: 6px; top: 6px; z-index: 2; padding: 2px 8px; font-size: 1rem;
+    background: rgba(0, 0, 0, 0.6); border: 1px solid #444; border-radius: 5px; color: #eee; cursor: pointer;
+  }
   .preview video { width: 100%; max-height: 520px; background: #000; display: block; }
   .preview img.under { position: absolute; inset: 0; margin: auto; filter: blur(2px); opacity: 0.6; }
   .preview img.hidden { visibility: hidden; position: absolute; }

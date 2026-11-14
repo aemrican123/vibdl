@@ -18,7 +18,13 @@
     post,
     onclose,
     ontag,
-  }: { post: BrowsePost; onclose: () => void; ontag: (tag: string, add: boolean) => void } = $props();
+    onview,
+  }: {
+    post: BrowsePost;
+    onclose: () => void;
+    ontag: (tag: string, add: boolean) => void;
+    onview?: () => void;
+  } = $props();
 
   let details = $state<PostDetails | null>(null);
   let error = $state<string | null>(null);
@@ -123,7 +129,10 @@
     <button class="ghost small" onclick={onclose} aria-label="Close">✕</button>
   </div>
 
-  <div class="preview">
+  <div class="preview" class:clickable={!!onview && !details?.video_key}>
+    {#if onview && !details?.video_key}
+      <button class="viewbtn" onclick={onview} title="Open full screen (Enter)" aria-label="Open full screen">⤢</button>
+    {/if}
     {#if details?.video_key}
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
@@ -143,6 +152,7 @@
         src={thumbUrl(details.sample_key)}
         alt={`Preview of post ${post.id}`}
         onload={() => (sampleLoaded = true)}
+        ondblclick={onview}
         onerror={() => (sampleFailed = true)}
       />
     {:else if post.thumb_key}
@@ -261,6 +271,11 @@
     background: #111216; border-radius: 6px; overflow: hidden;
   }
   .preview img { max-width: 100%; max-height: 480px; object-fit: contain; display: block; }
+  .preview .viewbtn {
+    position: absolute; right: 6px; top: 6px; z-index: 2; padding: 2px 8px; font-size: 1rem;
+    background: rgba(0, 0, 0, 0.6); border: 1px solid #444; border-radius: 5px; color: #eee; cursor: pointer;
+  }
+  .preview.clickable img { cursor: zoom-in; }
   .preview video { width: 100%; max-height: 480px; background: #000; display: block; }
   .preview img.under { position: absolute; inset: 0; margin: auto; filter: blur(2px); opacity: 0.6; }
   .preview img.hidden { visibility: hidden; position: absolute; }

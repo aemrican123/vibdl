@@ -12,6 +12,16 @@ use serde::{Deserialize, Serialize};
 use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedSearch {
+    pub name: String,
+    /// Board id, or "library" for the offline library filter.
+    pub scope: String,
+    pub query: String,
+}
+
+pub const MAX_SAVED_SEARCHES: usize = 200;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// User has self-attested they are 18+ (shown on first run).
@@ -32,6 +42,7 @@ pub struct Settings {
     /// Minimum gap between API requests (applies after restart).
     pub api_min_interval_ms: u64,
     pub download_concurrency: u32,
+    pub saved_searches: Vec<SavedSearch>,
 }
 
 impl Default for Settings {
@@ -46,6 +57,7 @@ impl Default for Settings {
             gelbooru_user_id: None,
             api_min_interval_ms: 1000,
             download_concurrency: 1,
+            saved_searches: Vec::new(),
         }
     }
 }
@@ -75,6 +87,26 @@ impl Settings {
             .filter(|(k, v)| !v.is_empty() && crate::providers::provider_info(k).is_some())
             .collect();
         self.library_dir = self.library_dir.filter(|p| !p.as_os_str().is_empty() && p.is_absolute());
+        let mut seen = std::collections::HashSet::new();
+        self.saved_searches = std::mem::take(&mut self.saved_searches)
+            .into_iter()
+            .map(|s| SavedSearch {
+                name: s.name.trim().chars().take(80).collect(),
+                scope: s.scope.trim().to_string(),
+                query: s.query.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(500).collect(),
+            })
+            .filter(|s| {
+                (s.scope == "library" || crate::providers::provider_info(&s.scope).is_some())
+                    && seen.insert((s.scope.clone(), s.query.clone()))
+            })
+            .map(|mut s| {
+                if s.name.is_empty() {
+                    s.name = if s.query.is_empty() { "Newest".into() } else { s.query.clone() };
+                }
+                s
+            })
+            .take(MAX_SAVED_SEARCHES)
+            .collect();
         if crate::providers::provider_info(&self.active_provider).is_none() {
             self.active_provider = "danbooru".into();
         }
@@ -154,6 +186,24 @@ mod tests {
         assert_eq!(s.allowed_ratings, vec!["general".to_string()]);
         let text = serde_json::to_string(&s).unwrap();
         assert!(!text.contains("gelbooru_user_id"));
+    }
+
+    #[test]
+    fn saved_searches_are_cleaned_and_deduped() {
+        let s = Settings {
+            saved_searches: vec![
+                SavedSearch { name: "  ".into(), scope: "danbooru".into(), query: " long_hair   smile ".into() },
+                SavedSearch { name: "dup".into(), scope: "danbooru".into(), query: "long_hair smile".into() },
+                SavedSearch { name: "lib".into(), scope: "library".into(), query: "artist:x".into() },
+                SavedSearch { name: "bad".into(), scope: "nowhere".into(), query: "x".into() },
+            ],
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(s.saved_searches.len(), 2);
+        assert_eq!(s.saved_searches[0].name, "long_hair smile");
+        assert_eq!(s.saved_searches[0].query, "long_hair smile");
+        assert_eq!(s.saved_searches[1].scope, "library");
     }
 
     #[test]

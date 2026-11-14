@@ -4,8 +4,10 @@
   import PostPanel from "$lib/PostPanel.svelte";
   import TagInput from "$lib/TagInput.svelte";
   import VirtualGrid from "$lib/VirtualGrid.svelte";
+  import SavedSearches from "$lib/SavedSearches.svelte";
+  import Viewer, { type ViewerMedia } from "$lib/Viewer.svelte";
   import { isTyping, loadPref, savePref } from "$lib/prefs";
-  import { api, errorText, thumbUrl, type BrowsePost, type Job } from "$lib/api";
+  import { api, errorText, mediaUrl, thumbUrl, type BrowsePost, type Job } from "$lib/api";
 
   let {
     provider,
@@ -62,18 +64,60 @@
     loadMore();
   }
 
-  // Re-run the last search for this board.
+  // Open with the last search for this board, or the newest posts.
   onMount(() => {
-    const last = loadPref<string | null>(`browse.query.${provider}`, null);
-    if (last !== null) {
-      query = last;
-      search();
-    }
+    query = loadPref<string | null>(`browse.query.${provider}`, null) ?? "";
+    search();
   });
+
+  // Full-screen viewer.
+  let viewerIndex = $state<number | null>(null);
+
+  function openViewer(i: number) {
+    if (i < 0 || i >= posts.length) return;
+    selected = posts[i];
+    viewerIndex = i;
+  }
+
+  async function resolveMedia(i: number): Promise<ViewerMedia | null> {
+    const p = posts[i];
+    if (!p) return null;
+    const thumb = p.thumb_key ? thumbUrl(p.thumb_key) : null;
+    const title = `${p.provider} #${p.id}`;
+    const subtitle = `${fmtRes(p)}${p.file_ext ? " · " + p.file_ext.toUpperCase() : ""}`;
+    try {
+      const d = await api.postDetails(p.provider, p.id);
+      if (d.video_key) return { kind: "video", src: mediaUrl(d.video_key), placeholder: thumb, title, subtitle };
+      if (d.sample_key)
+        return {
+          kind: "image",
+          src: thumbUrl(d.sample_key),
+          placeholder: thumb,
+          originalSrc: d.original_key && !d.preview_is_original ? thumbUrl(d.original_key) : null,
+          title,
+          subtitle,
+        };
+    } catch {
+      /* fall back to the thumbnail */
+    }
+    return thumb ? { kind: "image", src: thumb, title, subtitle } : null;
+  }
+
+  function viewerMove(i: number) {
+    viewerIndex = i;
+    selected = posts[i];
+    grid?.reveal(i);
+    if (i >= posts.length - 5) loadMore();
+  }
 
   // Keyboard: "/" search · Esc close/exit · ←/→ previous/next post.
   function onKey(e: KeyboardEvent) {
-    if (!active || isTyping(e)) return;
+    if (!active || viewerIndex !== null || isTyping(e)) return;
+    if (e.key === "Enter" && selected) {
+      e.preventDefault();
+      openViewer(posts.findIndex((p) => p.id === selected!.id));
+      return;
+    }
     if (e.key === "/") {
       e.preventDefault();
       searchBox?.focus();
@@ -216,6 +260,16 @@
 
 <svelte:window onkeydown={onKey} />
 
+{#if viewerIndex !== null && active}
+  <Viewer
+    count={posts.length}
+    index={viewerIndex}
+    resolve={resolveMedia}
+    onindex={viewerMove}
+    onclose={() => (viewerIndex = null)}
+  />
+{/if}
+
 <div class="browse">
   <form class="searchbar" onsubmit={search}>
     <TagInput
@@ -226,6 +280,14 @@
       onsubmit={() => search()}
     />
     <button type="submit" disabled={loading && posts.length === 0}>Search</button>
+    <SavedSearches
+      scope={provider}
+      query={activeQuery ?? ""}
+      onrun={(q) => {
+        query = q;
+        search();
+      }}
+    />
     <button
       type="button"
       class="ghost"
@@ -243,7 +305,7 @@
 
   <div class="status">
     {#if activeQuery === null}
-      Enter tags and press Search. Leave it empty to see the newest posts.
+      Loading the newest posts…
     {:else}
       {posts.length} loaded{total !== null ? ` of ${total.toLocaleString()} matches` : ""}
       {#if loading}· loading…{/if}
@@ -274,6 +336,7 @@
           class:sel={selected?.id === p.id}
           class:picked={picked.has(p.id)}
           onclick={(e) => onTile(e, p, i)}
+          ondblclick={() => openViewer(i)}
           title={`#${p.id} · ${fmtRes(p)}`}
         >
           {#if p.thumb_key && (thumbRetries[p.id] ?? 0) <= MAX_THUMB_RETRIES}
@@ -303,7 +366,12 @@
     </VirtualGrid>
 
     {#if selected}
-      <PostPanel post={selected} onclose={() => (selected = null)} ontag={searchTag} />
+      <PostPanel
+        post={selected}
+        onclose={() => (selected = null)}
+        ontag={searchTag}
+        onview={() => openViewer(posts.findIndex((p) => p.id === selected?.id))}
+      />
     {/if}
   </div>
 </div>

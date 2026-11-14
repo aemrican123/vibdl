@@ -605,22 +605,16 @@ pub async fn library_delete(
 
 /// Re-fetch a post's metadata from its board and update sidecar + index.
 /// The image file is not touched.
-#[tauri::command]
-pub async fn library_refresh(
-    state: State<'_, AppState>,
-    provider: String,
-    remote_id: String,
-) -> AppResult<Option<library::LibraryDetails>> {
-    state.require_age()?;
+async fn refresh_one(state: &AppState, provider: &str, remote_id: &str) -> AppResult<()> {
     let lib = state.library()?;
     let entry = lib
         .db
-        .find(&provider, &remote_id, None)?
+        .find(provider, remote_id, None)?
         .filter(|e| e.provider == provider && e.remote_id == remote_id)
         .ok_or_else(|| AppError::Settings("That item isn't in the library.".into()))?;
-    let p = state.provider(&provider)?;
+    let p = state.provider(provider)?;
     let post = p
-        .get_post(&remote_id)
+        .get_post(remote_id)
         .await?
         .ok_or_else(|| AppError::Rejected("the board no longer has this post (deleted?)".into()))?;
     state.posts.put(&post);
@@ -641,7 +635,99 @@ pub async fn library_refresh(
     sc.raw = post.raw.clone();
     crate::storage::write_sidecar(&media, &sc)?;
     lib.db.upsert(&sc, &entry.local_path)?;
-    library::details(&lib.db, &provider, &remote_id)
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn library_refresh(
+    state: State<'_, AppState>,
+    provider: String,
+    remote_id: String,
+) -> AppResult<Option<library::LibraryDetails>> {
+    state.require_age()?;
+    refresh_one(&state, &provider, &remote_id).await?;
+    library::details(&state.library()?.db, &provider, &remote_id)
+}
+
+#[derive(serde::Deserialize)]
+pub struct ItemKey {
+    pub provider: String,
+    pub remote_id: String,
+}
+
+fn to_pairs(items: Vec<ItemKey>) -> Vec<(String, String)> {
+    items.into_iter().map(|k| (k.provider, k.remote_id)).collect()
+}
+
+/// Every item matching the Library filter (for "select all").
+#[tauri::command]
+pub fn library_keys(state: State<'_, AppState>, q: String) -> AppResult<Vec<(String, String)>> {
+    let settings = state.require_age()?;
+    library::keys(&state.library()?.db, &q, &settings.allowed_ratings)
+}
+
+#[tauri::command]
+pub async fn library_delete_many(
+    state: State<'_, AppState>,
+    items: Vec<ItemKey>,
+) -> AppResult<library::manage::BulkReport> {
+    state.require_age()?;
+    let lib = state.library()?;
+    let keys = to_pairs(items);
+    let r = blocking(move || Ok(library::manage::delete_many(&lib, &keys, library::manage::DeleteMode::RecycleBin))).await?;
+    tracing::info!(deleted = r.done, failed = r.failed, "bulk delete");
+    Ok(r)
+}
+
+#[tauri::command]
+pub async fn library_export_selected(
+    state: State<'_, AppState>,
+    items: Vec<ItemKey>,
+    dest: String,
+    pattern: String,
+) -> AppResult<library::manage::ExportReport> {
+    let settings = state.require_age()?;
+    let lib = state.library()?;
+    let keys = to_pairs(items);
+    blocking(move || {
+        library::manage::export_selected(&lib, &keys, &settings.allowed_ratings, std::path::Path::new(dest.trim()), &pattern)
+    })
+    .await
+}
+
+#[derive(Clone, Serialize)]
+struct BulkProgress {
+    done: usize,
+    total: usize,
+}
+
+/// Refresh metadata for several items, one at a time (rate-limited like
+/// every API call). Emits `bulk-progress`.
+#[tauri::command]
+pub async fn library_refresh_many(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    items: Vec<ItemKey>,
+) -> AppResult<library::manage::BulkReport> {
+    state.require_age()?;
+    let mut r = library::manage::BulkReport::default();
+    let total = items.len();
+    for (i, k) in items.iter().enumerate() {
+        match refresh_one(&state, &k.provider, &k.remote_id).await {
+            Ok(()) => r.done += 1,
+            Err(e) => {
+                r.failed += 1;
+                if r.errors.len() < 20 {
+                    r.errors.push(format!("{} #{}: {e}", k.provider, k.remote_id));
+                }
+                if matches!(e, AppError::Unauthorized(_) | AppError::MissingCredentials(_)) {
+                    break; // every remaining one would fail the same way
+                }
+            }
+        }
+        let _ = app.emit("bulk-progress", BulkProgress { done: i + 1, total });
+    }
+    Ok(r)
 }
 
 #[tauri::command]

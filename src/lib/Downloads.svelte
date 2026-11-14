@@ -53,7 +53,7 @@
     <button class="ghost" disabled={jobs.length === counts.active} onclick={() => act(api.queueClearFinished())}>Clear finished</button>
   </div>
   <p class="hint">
-    Downloads run one at a time, at most one per second. Network errors are retried twice. The queue is cleared when you close VIBDL.
+    Downloads run one at a time, at most one per second. Network errors are retried twice. Unfinished and failed downloads are kept when you close VIBDL and resume on the next start.
   </p>
   {#if error}<p class="err">{error}</p>{/if}
 

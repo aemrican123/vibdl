@@ -23,6 +23,9 @@ const MAX_THUMB_BYTES: usize = 5 * 1024 * 1024;
 const MAX_SAMPLE_BYTES: usize = 25 * 1024 * 1024;
 const SAMPLE_SUFFIX: &str = "-s";
 const VIDEO_SUFFIX: &str = "-v";
+/// Original image for the full-screen viewer (memory only, on request).
+const ORIGINAL_SUFFIX: &str = "-o";
+const MAX_ORIGINAL_BYTES: usize = 60 * 1024 * 1024;
 const MAX_REGISTERED: usize = 50_000;
 const SWEEP_EVERY_WRITES: u32 = 50;
 /// The image CDN rate-limits (HTTP 429) bursts, so stay under it:
@@ -62,6 +65,10 @@ pub fn sample_key(provider: &str, md5: &str) -> Option<String> {
     make_key(provider, md5).map(|k| k + SAMPLE_SUFFIX)
 }
 
+pub fn original_key(provider: &str, md5: &str) -> Option<String> {
+    make_key(provider, md5).map(|k| k + ORIGINAL_SUFFIX)
+}
+
 pub fn video_key(provider: &str, md5: &str) -> Option<String> {
     make_key(provider, md5).map(|k| k + VIDEO_SUFFIX)
 }
@@ -70,6 +77,7 @@ pub fn is_valid_key(key: &str) -> bool {
     let key = key
         .strip_suffix(SAMPLE_SUFFIX)
         .or_else(|| key.strip_suffix(VIDEO_SUFFIX))
+        .or_else(|| key.strip_suffix(ORIGINAL_SUFFIX))
         .unwrap_or(key);
     let Some((provider, md5)) = key.split_once('-') else {
         return false;
@@ -124,6 +132,11 @@ impl Thumbs {
     /// Remember a sample-preview URL. Returns the key.
     pub fn register_sample(&self, provider: &str, md5: &str, url: &str) -> Option<String> {
         self.insert(sample_key(provider, md5)?, url)
+    }
+
+    /// Remember an original-image URL for the viewer. Returns the key.
+    pub fn register_original(&self, provider: &str, md5: &str, url: &str) -> Option<String> {
+        self.insert(original_key(provider, md5)?, url)
     }
 
     /// Remember a video URL (served by the `media` scheme). Returns the key.
@@ -261,12 +274,13 @@ impl Thumbs {
         if !is_valid_key(key) || self.is_missing(key) || key.ends_with(VIDEO_SUFFIX) {
             return Ok(None);
         }
-        if key.ends_with(SAMPLE_SUFFIX) {
+        if key.ends_with(SAMPLE_SUFFIX) || key.ends_with(ORIGINAL_SUFFIX) {
             let Some(url) = self.lookup(key) else {
                 return Ok(None);
             };
+            let max = if key.ends_with(ORIGINAL_SUFFIX) { MAX_ORIGINAL_BYTES } else { MAX_SAMPLE_BYTES };
             let _permit = self.sample_permits.acquire().await.expect("semaphore closed");
-            let got = self.fetch_image(&url, MAX_SAMPLE_BYTES).await?;
+            let got = self.fetch_image(&url, max).await?;
             if got.is_none() {
                 self.mark_missing(key);
             }
@@ -387,6 +401,7 @@ mod tests {
         );
         assert!(is_valid_key("gelbooru-0123456789abcdef0123456789abcdef-s"));
         assert!(!is_valid_key("gelbooru-0123456789abcdef0123456789abcdef-x"));
+        assert!(is_valid_key("gelbooru-0123456789abcdef0123456789abcdef-o"));
     }
 
     #[test]

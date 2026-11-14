@@ -171,6 +171,9 @@ pub struct PostDetails {
     pub preview_is_original: bool,
     /// Key for streaming the video (mp4/webm) via the `media` scheme.
     pub video_key: Option<String>,
+    /// Key for viewing the full original image (still images only; fetched
+    /// only when the user asks for it in the viewer, never saved).
+    pub original_key: Option<String>,
     pub tags: CategorizedTags,
     pub tag_lookup_error: Option<String>,
     /// How many tags needed an API lookup (0 = all from cache).
@@ -237,6 +240,12 @@ pub fn to_details(
         (Some(md5), Some(url), Some(ext)) if media::is_video(ext) => thumbs.register_video(p.provider, md5, url),
         _ => None,
     };
+    let original_key = match (p.md5.as_deref(), p.file_url.as_deref(), p.file_ext.as_deref()) {
+        (Some(md5), Some(url), Some(ext)) if crate::library::thumbs::is_still(ext) => {
+            thumbs.register_original(p.provider, md5, url)
+        }
+        _ => None,
+    };
     let thumb_key = match (p.md5.as_deref(), p.preview_url.as_deref()) {
         (Some(md5), Some(url)) => thumbs.register(p.provider, md5, url),
         _ => None,
@@ -262,6 +271,7 @@ pub fn to_details(
         sample_key,
         preview_is_original,
         video_key,
+        original_key,
         tags,
         tag_lookup_error,
         tags_looked_up,
@@ -317,6 +327,8 @@ mod tests {
         assert_eq!(d.sources, vec!["https://a", "https://b"]);
         assert!(d.sample_key.as_deref().unwrap().ends_with("-s"));
         assert!(d.thumb_key.is_some());
+        assert!(d.original_key.as_deref().unwrap().ends_with("-o"));
+        assert!(d.video_key.is_none());
     }
 
     #[test]

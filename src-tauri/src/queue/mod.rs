@@ -1,20 +1,21 @@
 //! Download queue for posts the user selected. One worker processes jobs
 //! sequentially (the downloader also spaces requests ≥ 1 s apart), retries
 //! transient network failures a couple of times, and can be cancelled.
-//! The queue lives for the session only.
+//! Unfinished jobs are saved to `queue.json` and resumed on the next start.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use crate::error::AppError;
 
 pub const MAX_ATTEMPTS: u32 = 3;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobState {
     Queued,
@@ -31,7 +32,7 @@ impl JobState {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub key: String,
     pub provider: String,
@@ -70,11 +71,57 @@ struct Inner {
 pub struct Queue {
     inner: Mutex<Inner>,
     notify: Notify,
+    /// Where unfinished jobs are saved (`None` = in-memory only).
+    persist: Option<PathBuf>,
 }
 
 impl Queue {
+    /// Load unfinished jobs from `path` (if any) and keep saving there.
+    pub fn persistent(path: PathBuf) -> Self {
+        let jobs: Vec<Job> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        let jobs = jobs
+            .into_iter()
+            .map(|mut j| {
+                if j.state == JobState::Downloading {
+                    j.state = JobState::Queued; // interrupted by closing the app
+                }
+                j.bytes = 0;
+                j.attempts = 0;
+                j
+            })
+            .filter(|j| matches!(j.state, JobState::Queued | JobState::Failed))
+            .collect::<Vec<_>>();
+        let has_work = jobs.iter().any(|j| j.state == JobState::Queued);
+        let q = Self { inner: Mutex::new(Inner { jobs, cancel: HashMap::new() }), notify: Notify::new(), persist: Some(path) };
+        if has_work {
+            q.notify.notify_one();
+        }
+        q
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().expect("queue lock poisoned")
+    }
+
+    /// Save queued / running / failed jobs (finished ones are in the library).
+    fn save(&self, inner: &Inner) {
+        let Some(path) = &self.persist else { return };
+        let keep: Vec<&Job> = inner
+            .jobs
+            .iter()
+            .filter(|j| matches!(j.state, JobState::Queued | JobState::Downloading | JobState::Failed))
+            .collect();
+        match serde_json::to_vec_pretty(&keep) {
+            Ok(bytes) => {
+                if let Err(e) = crate::storage::write_atomic(path, &bytes) {
+                    tracing::warn!("couldn't save download queue: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("couldn't serialize download queue: {e}"),
+        }
     }
 
     /// Add posts; already queued/running/finished-OK posts are skipped, and
@@ -108,8 +155,9 @@ impl Queue {
             });
             added += 1;
         }
-        drop(inner);
         if added > 0 {
+            self.save(&inner);
+            drop(inner);
             self.notify.notify_one();
         }
         added
@@ -129,6 +177,7 @@ impl Queue {
         let job = job.clone();
         let flag = Arc::new(AtomicBool::new(false));
         inner.cancel.insert(job.key.clone(), flag.clone());
+        self.save(&inner);
         Some((job, flag))
     }
 
@@ -139,6 +188,7 @@ impl Queue {
             if j.state != JobState::Downloading {
                 inner.cancel.remove(key);
             }
+            self.save(&inner);
         }
     }
 
@@ -151,6 +201,7 @@ impl Queue {
         match job.state {
             JobState::Queued => {
                 job.state = JobState::Cancelled;
+                self.save(&inner);
                 true
             }
             JobState::Downloading => {
@@ -184,15 +235,18 @@ impl Queue {
             j.bytes = 0;
             n += 1;
         }
-        drop(inner);
         if n > 0 {
+            self.save(&inner);
+            drop(inner);
             self.notify.notify_one();
         }
         n
     }
 
     pub fn clear_finished(&self) {
-        self.lock().jobs.retain(|j| !j.state.is_finished());
+        let mut inner = self.lock();
+        inner.jobs.retain(|j| !j.state.is_finished());
+        self.save(&inner);
     }
 
     /// Wait until something is added (no lost wake-ups: `notify_one`
@@ -252,6 +306,33 @@ mod tests {
         q.clear_finished();
         assert_eq!(q.snapshot().len(), 1);
         assert_eq!(q.cancel_all(), 1);
+    }
+
+    #[test]
+    fn unfinished_jobs_survive_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("queue.json");
+        {
+            let q = Queue::persistent(path.clone());
+            q.add("danbooru", &items(&["1", "2", "3", "4"]));
+            let (a, _) = q.next().unwrap(); // #1 running when the app "closes"
+            let (b, _) = q.next().unwrap();
+            q.update(&b.key, |j| j.state = JobState::Done);
+            let (c, _) = q.next().unwrap();
+            q.update(&c.key, |j| {
+                j.state = JobState::Failed;
+                j.error = Some("boom".into());
+            });
+            assert_eq!(a.id, "1");
+        }
+        let q = Queue::persistent(path.clone());
+        let snap = q.snapshot();
+        let states: Vec<(&str, JobState)> = snap.iter().map(|j| (j.id.as_str(), j.state)).collect();
+        assert_eq!(states, vec![("1", JobState::Queued), ("3", JobState::Failed), ("4", JobState::Queued)]);
+        assert_eq!(q.next().unwrap().0.id, "1", "interrupted job resumes first");
+        // Garbage file → empty queue, no panic.
+        std::fs::write(&path, "not json").unwrap();
+        assert!(Queue::persistent(path).snapshot().is_empty());
     }
 
     #[test]
