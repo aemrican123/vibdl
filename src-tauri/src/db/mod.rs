@@ -178,6 +178,12 @@ impl Db {
         tx.commit().map_err(db_err)
     }
 
+    /// Run read-only queries (used by `library`).
+    pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> AppResult<T> {
+        let conn = self.conn.lock().expect("db lock poisoned");
+        f(&conn).map_err(db_err)
+    }
+
     pub fn post_count(&self) -> AppResult<u64> {
         let conn = self.conn.lock().expect("db lock poisoned");
         conn.query_row("SELECT COUNT(*) FROM posts", [], |r| r.get::<_, i64>(0))

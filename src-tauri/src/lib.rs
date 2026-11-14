@@ -10,13 +10,14 @@
 //!   downloads/  original downloads (verify, atomic move) + index rebuild
 //!   storage/    library folder layout + sidecar JSON
 //!   db/         SQLite index of the library
-//! Coming next: library/ (offline browsing + filters)
+//!   library/    offline search/filter/facets + local thumbnails
 
 pub mod browse;
 pub mod commands;
 pub mod db;
 pub mod downloads;
 pub mod error;
+pub mod library;
 pub mod metadata;
 pub mod net;
 pub mod providers;
@@ -70,6 +71,29 @@ pub fn run() {
                 responder.respond(resp);
             });
         })
+        // Offline library images: library://localhost/t-<provider>-<md5> (thumb)
+        // and .../f-<provider>-<md5> (original).
+        .register_asynchronous_uri_scheme_protocol("library", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let key = request.uri().path().trim_start_matches('/').to_string();
+            tauri::async_runtime::spawn(async move {
+                let state = app.state::<AppState>();
+                let resp = match commands::serve_library(&state, &key).await {
+                    Ok(Some((bytes, mime))) => Response::builder()
+                        .status(200)
+                        .header(header::CONTENT_TYPE, mime)
+                        .header(header::CACHE_CONTROL, "max-age=3600")
+                        .body(bytes)
+                        .unwrap_or_else(|_| empty(500)),
+                    Ok(None) => empty(404),
+                    Err(e) => {
+                        tracing::warn!(%key, "library file failed: {e}");
+                        empty(500)
+                    }
+                };
+                responder.respond(resp);
+            });
+        })
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;
@@ -102,6 +126,7 @@ pub fn run() {
                 downloader: downloads::Downloader::new(net::build_http_no_redirect()?),
                 default_library_dir,
                 library: Mutex::new(None),
+                thumb_gen: tokio::sync::Semaphore::new(2),
             });
             Ok(())
         })
@@ -121,6 +146,9 @@ pub fn run() {
             commands::open_local,
             commands::open_library_folder,
             commands::rebuild_library,
+            commands::library_search,
+            commands::library_facets,
+            commands::library_details,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

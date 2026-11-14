@@ -1,12 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Browse from "$lib/Browse.svelte";
+  import Library from "$lib/Library.svelte";
   import Settings from "$lib/Settings.svelte";
   import { api } from "$lib/api";
 
-  type Tab = "browse" | "settings";
+  type Tab = "browse" | "library" | "settings";
   let tab = $state<Tab>("settings");
   let ready = $state(false); // age confirmed + active board usable
+  let ageOk = $state(false); // Library only needs the age confirmation
+  let libraryView = $state<{ refresh: () => void } | null>(null);
   let provider = $state(""); // active board id
   let providerName = $state("");
 
@@ -16,6 +19,7 @@
       const [c, list] = await Promise.all([api.credentialStatus(s.active_provider), api.listProviders()]);
       provider = s.active_provider;
       providerName = list.find((p) => p.id === provider)?.name ?? provider;
+      ageOk = s.age_confirmed;
       ready = s.age_confirmed && c.ready;
     } catch {
       ready = false;
@@ -25,6 +29,7 @@
   onMount(async () => {
     await refreshReady();
     if (ready) tab = "browse";
+    else if (ageOk) tab = "library";
   });
 </script>
 
@@ -35,7 +40,14 @@
       <button class:active={tab === "browse"} disabled={!ready} onclick={() => (tab = "browse")}>
         Browse{providerName ? ` · ${providerName}` : ""}
       </button>
-      <button disabled title="Milestone 5">Library</button>
+      <button
+        class:active={tab === "library"}
+        disabled={!ageOk}
+        onclick={() => {
+          if (tab !== "library") libraryView?.refresh();
+          tab = "library";
+        }}>Library</button
+      >
       <button class:active={tab === "settings"} onclick={() => (tab = "settings")}>Settings</button>
     </nav>
   </header>
@@ -45,6 +57,9 @@
     <div class="pane" class:hidden={tab !== "browse"}>
       <!-- Switching boards starts a fresh browser. -->
       {#if ready}{#key provider}<Browse />{/key}{/if}
+    </div>
+    <div class="pane" class:hidden={tab !== "library"}>
+      {#if ageOk}<Library bind:this={libraryView} />{/if}
     </div>
     {#if tab === "settings"}
       <div class="pane scroll"><Settings onchange={refreshReady} /></div>

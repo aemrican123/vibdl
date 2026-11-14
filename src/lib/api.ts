@@ -132,6 +132,54 @@ export interface RebuildReport {
   errors: string[];
 }
 
+export type LibrarySort = "newest" | "oldest" | "resolution" | "file_size";
+
+export interface LibraryItem {
+  provider: string;
+  remote_id: string;
+  md5: string;
+  rating: string | null;
+  width: number | null;
+  height: number | null;
+  file_ext: string;
+  file_size: number;
+  local_path: string;
+  downloaded_at: string;
+  post_url: string;
+}
+
+export interface LibrarySearchResult {
+  items: LibraryItem[];
+  total: number;
+  offset: number;
+}
+
+export interface Facet {
+  name: string;
+  count: number;
+}
+
+export interface Facets {
+  artist: Facet[];
+  character: Facet[];
+  copyright: Facet[];
+}
+
+export interface LibraryDetails {
+  item: LibraryItem;
+  source: string | null;
+  file_url: string | null;
+  created_at: string | null;
+  tags: CategorizedTags;
+  fields: Record<string, unknown>;
+}
+
+/** Offline library thumbnail / original file URLs (served by Rust). */
+export const libraryThumbUrl = (i: { provider: string; md5: string }) =>
+  convertFileSrc(`t-${i.provider}-${i.md5}`, "library");
+export const libraryFileUrl = (i: { provider: string; md5: string }) =>
+  convertFileSrc(`f-${i.provider}-${i.md5}`, "library");
+
 /** URL the webview can load for a registered thumbnail key. */
 export const thumbUrl = (key: string) => convertFileSrc(key, "thumb");
 
@@ -150,6 +198,11 @@ export const api = {
   openLocal: (localPath: string, reveal: boolean) => invoke<void>("open_local", { localPath, reveal }),
   openLibraryFolder: () => invoke<void>("open_library_folder"),
   rebuildLibrary: () => invoke<RebuildReport>("rebuild_library"),
+  librarySearch: (q: string, sort: LibrarySort, offset: number) =>
+    invoke<LibrarySearchResult>("library_search", { q, sort, offset }),
+  libraryFacets: (q: string) => invoke<Facets>("library_facets", { q }),
+  libraryDetails: (provider: string, remoteId: string) =>
+    invoke<LibraryDetails | null>("library_details", { provider, remoteId }),
   browseSearch: (tags: string, page: number) => invoke<BrowsePage>("browse_search", { tags, page }),
 };
 

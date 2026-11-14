@@ -24,6 +24,7 @@ src/                    UI (SvelteKit, SPA mode)
   lib/api.ts            typed wrappers for Rust commands
   lib/Browse.svelte     online gallery
   lib/Settings.svelte   setup & settings
+  lib/Library.svelte    offline library (+ LocalPanel.svelte)
 src-tauri/src/
   commands.rs           Tauri IPC surface
   error.rs              redacted error type
@@ -36,6 +37,7 @@ src-tauri/src/
   downloads/            original downloads + index rebuild
   storage/              library folder layout + sidecar JSON
   db/                   SQLite index
+  library/              offline query language, search, facets, local thumbnails
   settings/             settings.json + OS keychain credentials
 docs/PLAN.md            feasibility report & roadmap
 ```
@@ -48,7 +50,11 @@ docs/PLAN.md            feasibility report & roadmap
 - [x] M3 — Post detail + categorized tags + sample preview
 - [x] Provider picker (Danbooru / Gelbooru / Rule34); Gelbooru images blocked by hotlink protection
 - [x] M4 — Single download (MD5-verified, atomic) + SQLite index + sidecars + rebuild
-- [ ] M5 — Local library (MVP)
+- [x] M5 — Offline Library tab: filters (tags, artist/char/copy, rating, board, type), facets, sort, local thumbnails — **MVP complete**
+
+## Library filter syntax
+
+`long_hair` has tag · `-monochrome` lacks tag · `artist:name` / `char:name` / `copy:name` / `meta:name` tag in a category · `rating:g,s` · `board:danbooru` · `type:png`. All terms are combined with AND. Your Settings rating filter always applies.
 
 ## Safety rules baked in
 

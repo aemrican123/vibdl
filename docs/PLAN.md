@@ -32,6 +32,12 @@ I could **not** open any gelbooru.com page from this research environment. The w
 - **[USER-VERIFIED]** The owner reviewed `tos.php` and judged personal use acceptable. VIBDL is personal use only and won't be distributed.
 - **[LIVE] BLOCKER (thumbnails):** `img4.gelbooru.com` answers VIBDL's thumbnail requests (`preview_url`) with **302 → `https://gelbooru.com/hotlink.php?hash=…`**. That is Gelbooru's deliberate hotlink protection, not missing files. VIBDL will **not** spoof a Referer or browser identity to get around it. Open questions: what hotlink.php says the policy is, whether `sample_url`/`file_url` (downloads) are blocked the same way, and whether Gelbooru offers an approved method for API clients.
 - **DECISION (2026-11-14):** Danbooru becomes the primary board. Gelbooru and Rule34 stay selectable in a provider picker. Gelbooru is search/metadata only until an approved image-access method exists.
+- **[DOC] Gelbooru TOS (text supplied by the owner, 2026-11-14):**
+  - Prohibits "any automated process to retrieve or index any portion of the site or site contents" (public search engines excepted).
+  - Acknowledges API use by "bots, apps and websites" on condition of no ads or paywalls.
+  - Requires personal use only.
+  - Doesn't grant app access to images, and hotlink protection enforces this.
+  - **Policy for VIBDL:** Gelbooru stays search/metadata only. No batch or automated downloads, ever. Image access only with explicit written permission from Gelbooru staff. VIBDL shows no ads.
 - Still [UNVERIFIED]: the behavior without a key, the tag endpoint's `type` values against a real response, the `created_at` format, and whether thumbnails need a Referer. These get checked as M2/M3 exercise them.
 
 ---

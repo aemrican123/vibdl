@@ -11,6 +11,7 @@ use crate::browse::{self, BrowsePage, PostCache, PostDetails, thumbs::Thumbs};
 use crate::db::LocalEntry;
 use crate::downloads::{self, Downloader, Library, Outcome, RebuildReport};
 use crate::error::{AppError, AppResult};
+use crate::library;
 use crate::metadata::{self, TagCache};
 use crate::net::ApiClient;
 use crate::providers::danbooru::{self, DanbooruProvider};
@@ -29,6 +30,8 @@ pub struct AppState {
     pub default_library_dir: PathBuf,
     /// Opened lazily; reopened if the library folder setting changes.
     pub library: Mutex<Option<Arc<Library>>>,
+    /// Limits concurrent local thumbnail generation (CPU/RAM heavy).
+    pub thumb_gen: tokio::sync::Semaphore,
 }
 
 fn info(id: &str) -> AppResult<&'static ProviderInfo> {
@@ -76,7 +79,7 @@ impl AppState {
         self.snapshot().library_dir.unwrap_or_else(|| self.default_library_dir.clone())
     }
 
-    fn library(&self) -> AppResult<Arc<Library>> {
+    pub fn library(&self) -> AppResult<Arc<Library>> {
         let root = self.library_root();
         let mut guard = self.library.lock().expect("library lock poisoned");
         if let Some(lib) = guard.as_ref().filter(|l| l.root == root) {
@@ -342,6 +345,76 @@ pub fn open_library_folder(app: AppHandle, state: State<'_, AppState>) -> AppRes
     app.opener()
         .open_path(lib.root.display().to_string(), None::<&str>)
         .map_err(|e| AppError::Settings(format!("couldn't open: {e}")))
+}
+
+#[tauri::command]
+pub fn library_search(
+    state: State<'_, AppState>,
+    q: String,
+    sort: library::Sort,
+    offset: u32,
+) -> AppResult<library::SearchResult> {
+    let settings = state.require_age()?;
+    library::search(&state.library()?.db, &q, sort, offset, &settings.allowed_ratings)
+}
+
+#[tauri::command]
+pub fn library_facets(state: State<'_, AppState>, q: String) -> AppResult<library::Facets> {
+    let settings = state.require_age()?;
+    library::facets(&state.library()?.db, &q, &settings.allowed_ratings)
+}
+
+#[tauri::command]
+pub fn library_details(
+    state: State<'_, AppState>,
+    provider: String,
+    remote_id: String,
+) -> AppResult<Option<library::LibraryDetails>> {
+    let settings = state.require_age()?;
+    let d = library::details(&state.library()?.db, &provider, &remote_id)?;
+    Ok(d.filter(|d| {
+        d.item.rating.as_ref().is_some_and(|r| settings.allowed_ratings.contains(r))
+    }))
+}
+
+/// Serve `library` URI requests: `t-<provider>-<md5>` (thumbnail, generated
+/// on demand) or `f-<provider>-<md5>` (original file). Only files that are
+/// in the index are served.
+pub async fn serve_library(state: &AppState, key: &str) -> AppResult<Option<(Vec<u8>, &'static str)>> {
+    let Some((kind, rest)) = key.split_once('-') else { return Ok(None) };
+    let Some((provider, md5)) = rest.split_once('-') else { return Ok(None) };
+    if !crate::storage::is_md5(md5) || providers::provider_info(provider).is_none() {
+        return Ok(None);
+    }
+    let lib = state.library()?;
+    let Some(entry) = lib.db.find(provider, "", Some(md5))? else { return Ok(None) };
+    let ext = entry.local_path.rsplit('.').next().unwrap_or("").to_string();
+    match kind {
+        "t" => {
+            let _permit = state.thumb_gen.acquire().await.expect("semaphore closed");
+            let cache = state.thumbs.dir().join(format!("{provider}-{md5}.thumb"));
+            let root = lib.root.clone();
+            let (p, m, lp) = (provider.to_string(), md5.to_string(), entry.local_path.clone());
+            let path = tauri::async_runtime::spawn_blocking(move || {
+                library::thumbs::ensure(&root, &p, &m, &lp, &ext, Some(&cache))
+            })
+            .await
+            .map_err(|e| AppError::Settings(format!("thumbnail task failed: {e}")))??;
+            match path {
+                Some(p) => Ok(Some((tokio::fs::read(p).await?, "image/jpeg"))),
+                None => Ok(None),
+            }
+        }
+        "f" => {
+            let abs = crate::storage::resolve_inside(&lib.root, std::path::Path::new(&entry.local_path))?;
+            match tokio::fs::read(&abs).await {
+                Ok(bytes) => Ok(Some((bytes, library::thumbs::mime_for(&ext)))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Rebuild the SQLite index from sidecar files.
