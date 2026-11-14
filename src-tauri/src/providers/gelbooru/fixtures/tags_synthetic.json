@@ -1,0 +1,11 @@
+{
+  "@attributes": { "limit": 7, "offset": 0, "count": 6 },
+  "tag": [
+    { "id": 1, "name": "example_artist", "count": 320, "type": 1, "ambiguous": 0 },
+    { "id": 2, "name": "character_a", "count": 5000, "type": 4, "ambiguous": 0 },
+    { "id": 3, "name": "example_series", "count": 90000, "type": 3, "ambiguous": 0 },
+    { "id": 4, "name": "long_hair", "count": 1500000, "type": 0, "ambiguous": 0 },
+    { "id": 5, "name": "highres", "count": "2000000", "type": "5", "ambiguous": 0 },
+    { "id": 6, "name": "old_tag", "count": 10, "type": 2, "ambiguous": 0 }
+  ]
+}

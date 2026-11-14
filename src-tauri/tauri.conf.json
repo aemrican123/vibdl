@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "vibdl",
+  "productName": "VIBDL",
   "version": "0.1.0",
   "identifier": "com.vibdl.app",
   "build": {
@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "vibdl",
-        "width": 800,
-        "height": 600
+        "title": "VIBDL",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 800,
+        "minHeight": 560
       }
     ],
     "security": {

@@ -1,0 +1,48 @@
+{
+  "@attributes": { "limit": 2, "offset": 0, "count": 57 },
+  "post": [
+    {
+      "id": 1000001,
+      "created_at": "Sat Nov 14 08:00:00 -0600 2026",
+      "score": 12,
+      "width": 2048,
+      "height": 1536,
+      "md5": "0123456789ABCDEF0123456789ABCDEF",
+      "directory": "01/23",
+      "image": "0123456789abcdef0123456789abcdef.png",
+      "rating": "general",
+      "source": "",
+      "change": 1794614000,
+      "owner": "someone",
+      "creator_id": 1,
+      "parent_id": 0,
+      "sample": 1,
+      "preview_height": 188,
+      "preview_width": 250,
+      "tags": "example_artist character_a character_b example_series long_hair blue_eyes night jeanne_d&#039;arc highres",
+      "title": "",
+      "has_notes": "false",
+      "has_comments": "false",
+      "file_url": "https://img.example/images/01/23/0123456789abcdef0123456789abcdef.png",
+      "preview_url": "https://img.example/thumbnails/01/23/thumbnail_0123456789abcdef0123456789abcdef.jpg",
+      "sample_url": "https://img.example/samples/01/23/sample_0123456789abcdef0123456789abcdef.jpg",
+      "sample_height": 637,
+      "sample_width": 850,
+      "status": "active",
+      "post_locked": 0,
+      "has_children": "false"
+    },
+    {
+      "id": "1000002",
+      "width": "800",
+      "height": "600",
+      "md5": "fedcba9876543210fedcba9876543210",
+      "image": "",
+      "rating": "sensitive",
+      "source": "https://example.com/art/2",
+      "tags": "solo",
+      "file_url": "https://img.example/images/fe/dc/fedcba9876543210fedcba9876543210.jpg",
+      "preview_url": "https://img.example/thumbnails/fe/dc/thumbnail_fedcba9876543210fedcba9876543210.jpg"
+    }
+  ]
+}

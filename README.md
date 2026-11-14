@@ -1,7 +1,48 @@
-# Tauri + SvelteKit + TypeScript
+# VIBDL — Vibecoded Image Board Downloader Library
 
-This template should help get you started developing with Tauri, SvelteKit and TypeScript in Vite.
+Personal desktop app for browsing imageboards, downloading selected originals with their metadata, and organizing them in a searchable local library. Gelbooru first; more boards later via the provider interface.
 
-## Recommended IDE Setup
+Personal use only — not distributed. Full plan: [docs/PLAN.md](docs/PLAN.md).
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+## Stack
+
+Tauri 2 (Rust core) · SvelteKit + TypeScript UI · SQLite (coming in M4)
+
+## Develop
+
+```powershell
+npm install
+npm run tauri dev               # run the app
+cd src-tauri; cargo test        # Rust unit tests
+npm run check                   # Svelte/TS type check
+```
+
+## Layout
+
+```
+src/                    UI (SvelteKit, SPA mode)
+  lib/api.ts            typed wrappers for Rust commands
+src-tauri/src/
+  commands.rs           Tauri IPC surface
+  error.rs              redacted error type
+  net/                  HTTP client, rate limiter, retry/backoff, secret redaction
+  providers/            ImageboardProvider trait + shared types
+    gelbooru/           Gelbooru dapi client + tolerant parser + fixtures
+  settings/             settings.json + OS keychain credentials
+docs/PLAN.md            feasibility report & roadmap
+```
+
+## Status
+
+- [x] M1 — Skeleton, settings, keychain credentials, rate-limited client, Gelbooru provider
+- [ ] M0 — Verify API fields/auth/TOS against real Gelbooru responses (replace synthetic fixtures)
+- [ ] M2 — Online browser (thumbnail grid)
+- [ ] M3 — Post detail + categorized tags
+- [ ] M4 — Single download + SQLite + sidecars
+- [ ] M5 — Local library (MVP)
+
+## Safety rules baked in
+
+- API key lives only in the OS credential store; `api_key`/`user_id` are redacted from every log and error.
+- ≥ 500 ms between API requests (default 1 s), backoff on 429/5xx, hard stop on 401/403.
+- Only general-rated content is shown until you opt in.
