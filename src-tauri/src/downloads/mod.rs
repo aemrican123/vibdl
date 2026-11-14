@@ -5,6 +5,7 @@
 //! dropped connection leaves at most a `.part` file, never a broken original.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use md5::{Digest, Md5};
@@ -87,6 +88,7 @@ impl Downloader {
         lib: &Library,
         post: &RemotePost,
         tags: CategorizedTags,
+        cancel: &AtomicBool,
         mut progress: impl FnMut(u64, Option<u64>),
     ) -> AppResult<Outcome> {
         if let Some(entry) = lib.db.find(post.provider, &post.remote_id, post.md5.as_deref())? {
@@ -106,6 +108,9 @@ impl Downloader {
 
         let _permit = self.permit.acquire().await.expect("semaphore closed");
         self.limiter.acquire().await;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(AppError::Cancelled);
+        }
 
         let resp = self.http.get(url).send().await?;
         let status = resp.status();
@@ -133,7 +138,7 @@ impl Downloader {
 
         std::fs::create_dir_all(lib.tmp_dir())?;
         let part = lib.tmp_dir().join(format!("{}-{}.part", post.provider, post.remote_id));
-        let result = self.stream_to(resp, &part, total, &mut progress).await;
+        let result = self.stream_to(resp, &part, total, cancel, &mut progress).await;
         let (bytes, md5) = match result {
             Ok(v) => v,
             Err(e) => {
@@ -201,6 +206,7 @@ impl Downloader {
         mut resp: reqwest::Response,
         part: &Path,
         total: Option<u64>,
+        cancel: &AtomicBool,
         progress: &mut impl FnMut(u64, Option<u64>),
     ) -> AppResult<(u64, String)> {
         let mut file = tokio::fs::File::create(part).await?;
@@ -209,6 +215,9 @@ impl Downloader {
         let mut last_report: u64 = 0;
         progress(0, total);
         while let Some(chunk) = resp.chunk().await? {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(AppError::Cancelled);
+            }
             written += chunk.len() as u64;
             if written > MAX_FILE_BYTES {
                 return Err(AppError::Rejected("file is larger than 2 GB".into()));
@@ -270,6 +279,8 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    static NO: AtomicBool = AtomicBool::new(false);
 
     const BODY: &[u8] = b"\x89PNG\r\n\x1a\nfake image bytes for testing";
 
@@ -354,7 +365,7 @@ mod tests {
         let p = post(&format!("{base}/ok"), Some(md5_of(BODY)));
 
         let mut reports = 0;
-        let out = dl.download(&lib, &p, tags(), |_, _| reports += 1).await.unwrap();
+        let out = dl.download(&lib, &p, tags(), &NO, |_, _| reports += 1).await.unwrap();
         let Outcome::Downloaded { entry, bytes } = out else { panic!("expected download") };
         assert_eq!(bytes, BODY.len() as u64);
         assert!(reports >= 2);
@@ -370,7 +381,7 @@ mod tests {
         // Second time: duplicate, no network needed.
         let mut p2 = p.clone();
         p2.file_url = Some("http://127.0.0.1:9/unreachable".into());
-        assert!(matches!(dl.download(&lib, &p2, tags(), |_, _| {}).await.unwrap(), Outcome::Duplicate { .. }));
+        assert!(matches!(dl.download(&lib, &p2, tags(), &NO, |_, _| {}).await.unwrap(), Outcome::Duplicate { .. }));
 
         // Rebuild from sidecars after losing the DB.
         drop(lib);
@@ -389,7 +400,7 @@ mod tests {
         let lib = Library::open(dir.path()).unwrap();
         let dl = Downloader::for_tests(client());
         let p = post(&format!("{base}/ok"), Some("ffffffffffffffffffffffffffffffff".into()));
-        let err = dl.download(&lib, &p, tags(), |_, _| {}).await.unwrap_err();
+        let err = dl.download(&lib, &p, tags(), &NO, |_, _| {}).await.unwrap_err();
         assert!(err.to_string().contains("MD5"));
         assert_eq!(leftover_parts(&lib), 0);
         assert_eq!(lib.db.post_count().unwrap(), 0);
@@ -403,7 +414,7 @@ mod tests {
         let lib = Library::open(dir.path()).unwrap();
         let dl = Downloader::for_tests(client());
         let p = post(&format!("{base}/short"), Some(md5_of(BODY)));
-        assert!(dl.download(&lib, &p, tags(), |_, _| {}).await.is_err());
+        assert!(dl.download(&lib, &p, tags(), &NO, |_, _| {}).await.is_err());
         assert_eq!(leftover_parts(&lib), 0);
         assert!(!lib.root.join("danbooru").exists());
     }
@@ -415,12 +426,24 @@ mod tests {
         let lib = Library::open(dir.path()).unwrap();
         let dl = Downloader::for_tests(client());
         for path in ["/redirect", "/html"] {
-            let e = dl.download(&lib, &post(&format!("{base}{path}"), None), tags(), |_, _| {}).await.unwrap_err();
+            let e = dl.download(&lib, &post(&format!("{base}{path}"), None), tags(), &NO, |_, _| {}).await.unwrap_err();
             assert!(matches!(e, AppError::Rejected(_)), "{path}: {e}");
         }
         let strict = Downloader::new(client());
-        let e = strict.download(&lib, &post(&format!("{base}/ok"), None), tags(), |_, _| {}).await.unwrap_err();
+        let e = strict.download(&lib, &post(&format!("{base}/ok"), None), tags(), &NO, |_, _| {}).await.unwrap_err();
         assert!(e.to_string().contains("non-HTTPS"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_before_start_downloads_nothing() {
+        let base = server().await;
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(dir.path()).unwrap();
+        let dl = Downloader::for_tests(client());
+        let stop = AtomicBool::new(true);
+        let e = dl.download(&lib, &post(&format!("{base}/ok"), None), tags(), &stop, |_, _| {}).await.unwrap_err();
+        assert!(matches!(e, AppError::Cancelled));
+        assert_eq!(lib.db.post_count().unwrap(), 0);
     }
 
     #[test]

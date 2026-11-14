@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::browse::{self, BrowsePage, PostCache, PostDetails, thumbs::Thumbs};
@@ -12,6 +12,7 @@ use crate::db::LocalEntry;
 use crate::downloads::{self, Downloader, Library, Outcome, RebuildReport};
 use crate::error::{AppError, AppResult};
 use crate::library;
+use crate::queue::{self, Job, JobState, Queue};
 use crate::metadata::{self, TagCache};
 use crate::net::ApiClient;
 use crate::providers::danbooru::{self, DanbooruProvider};
@@ -32,6 +33,7 @@ pub struct AppState {
     pub library: Mutex<Option<Arc<Library>>>,
     /// Limits concurrent local thumbnail generation (CPU/RAM heavy).
     pub thumb_gen: tokio::sync::Semaphore,
+    pub queue: Queue,
 }
 
 fn info(id: &str) -> AppResult<&'static ProviderInfo> {
@@ -301,9 +303,10 @@ pub async fn download_post(
     let lib = state.library()?;
     let (tags, _, _) = metadata::categorize_post(p.as_ref(), &state.tag_cache, &post).await;
     let (prov, pid) = (provider.clone(), id.clone());
+    let never = std::sync::atomic::AtomicBool::new(false);
     state
         .downloader
-        .download(&lib, &post, tags, move |bytes, total| {
+        .download(&lib, &post, tags, &never, move |bytes, total| {
             let _ = app.emit(
                 "download-progress",
                 DownloadProgress { provider: prov.clone(), id: pid.clone(), bytes, total },
@@ -414,6 +417,162 @@ pub async fn serve_library(state: &AppState, key: &str) -> AppResult<Option<(Vec
             }
         }
         _ => Ok(None),
+    }
+}
+
+/// Which of these posts are already in the library (same post or same file).
+#[derive(serde::Deserialize)]
+pub struct StatusQuery {
+    pub id: String,
+    pub md5: Option<String>,
+}
+
+#[tauri::command]
+pub fn local_status_many(
+    state: State<'_, AppState>,
+    provider: String,
+    items: Vec<StatusQuery>,
+) -> AppResult<Vec<String>> {
+    let lib = state.library()?;
+    let mut have = Vec::new();
+    for it in items.iter().take(1000) {
+        if lib.db.find(&provider, &it.id, it.md5.as_deref())?.is_some() {
+            have.push(it.id.clone());
+        }
+    }
+    Ok(have)
+}
+
+#[derive(serde::Deserialize)]
+pub struct QueueItem {
+    pub id: String,
+    pub thumb_key: Option<String>,
+}
+
+/// Queue selected posts for download. Only boards whose terms allow it.
+#[tauri::command]
+pub fn queue_add(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider: String,
+    items: Vec<QueueItem>,
+) -> AppResult<usize> {
+    state.require_age()?;
+    let meta = info(&provider)?;
+    if !meta.allows_batch {
+        return Err(AppError::Rejected(format!(
+            "multi-download is disabled for {} (its terms don't allow automated retrieval, or haven't been reviewed).",
+            meta.name
+        )));
+    }
+    let items: Vec<(String, Option<String>)> = items.into_iter().map(|i| (i.id, i.thumb_key)).collect();
+    let n = state.queue.add(&provider, &items);
+    emit_queue(&app, &state.queue);
+    Ok(n)
+}
+
+#[tauri::command]
+pub fn queue_list(state: State<'_, AppState>) -> Vec<Job> {
+    state.queue.snapshot()
+}
+
+#[tauri::command]
+pub fn queue_cancel(app: AppHandle, state: State<'_, AppState>, key: Option<String>) -> usize {
+    let n = match key {
+        Some(k) => usize::from(state.queue.cancel(&k)),
+        None => state.queue.cancel_all(),
+    };
+    emit_queue(&app, &state.queue);
+    n
+}
+
+#[tauri::command]
+pub fn queue_retry_failed(app: AppHandle, state: State<'_, AppState>) -> usize {
+    let n = state.queue.retry_failed();
+    emit_queue(&app, &state.queue);
+    n
+}
+
+#[tauri::command]
+pub fn queue_clear_finished(app: AppHandle, state: State<'_, AppState>) {
+    state.queue.clear_finished();
+    emit_queue(&app, &state.queue);
+}
+
+fn emit_queue(app: &AppHandle, q: &Queue) {
+    let _ = app.emit("queue-updated", q.snapshot());
+}
+
+#[derive(Clone, Serialize)]
+struct QueueProgress {
+    key: String,
+    bytes: u64,
+    total: Option<u64>,
+}
+
+async fn run_job(app: &AppHandle, state: &AppState, job: &Job, cancel: &std::sync::atomic::AtomicBool) -> AppResult<Outcome> {
+    let settings = state.require_age()?;
+    let p = state.provider(&job.provider)?;
+    let post = state.post(p.as_ref(), &job.id).await?;
+    if !browse::rating_allowed(&post, &settings.allowed_ratings) {
+        return Err(AppError::Settings("rating hidden by your settings".into()));
+    }
+    let lib = state.library()?;
+    let (tags, _, _) = metadata::categorize_post(p.as_ref(), &state.tag_cache, &post).await;
+    let (key, prov, pid) = (job.key.clone(), job.provider.clone(), job.id.clone());
+    let app2 = app.clone();
+    state
+        .downloader
+        .download(&lib, &post, tags, cancel, move |bytes, total| {
+            let _ = app2.emit("queue-progress", QueueProgress { key: key.clone(), bytes, total });
+            let _ = app2.emit(
+                "download-progress",
+                DownloadProgress { provider: prov.clone(), id: pid.clone(), bytes, total },
+            );
+        })
+        .await
+}
+
+/// Background worker: processes queued jobs one at a time, forever.
+pub async fn queue_worker(app: AppHandle) {
+    loop {
+        let state = app.state::<AppState>();
+        let Some((job, cancel)) = state.queue.next() else {
+            state.queue.wait().await;
+            continue;
+        };
+        emit_queue(&app, &state.queue);
+        let result = run_job(&app, &state, &job, &cancel).await;
+        match result {
+            Ok(Outcome::Downloaded { entry, bytes }) => state.queue.update(&job.key, |j| {
+                j.state = JobState::Done;
+                j.bytes = bytes;
+                j.local_path = Some(entry.local_path);
+            }),
+            Ok(Outcome::Duplicate { entry }) => state.queue.update(&job.key, |j| {
+                j.state = JobState::Duplicate;
+                j.local_path = Some(entry.local_path);
+            }),
+            Err(AppError::Cancelled) => state.queue.update(&job.key, |j| j.state = JobState::Cancelled),
+            Err(e) if queue::is_retryable(&e) && job.attempts < queue::MAX_ATTEMPTS && !cancel.load(std::sync::atomic::Ordering::Relaxed) => {
+                let wait = std::time::Duration::from_secs(5 * job.attempts as u64);
+                tracing::warn!(job = %job.key, attempt = job.attempts, "download failed, retrying in {}s: {e}", wait.as_secs());
+                state.queue.update(&job.key, |j| {
+                    j.state = JobState::Queued;
+                    j.error = Some(format!("retrying: {e}"));
+                });
+                emit_queue(&app, &state.queue);
+                tokio::time::sleep(wait).await;
+            }
+            Err(e) => {
+                tracing::warn!(job = %job.key, "download failed: {e}");
+                state.queue.update(&job.key, |j| {
+                    j.state = JobState::Failed;
+                    j.error = Some(e.to_string());
+                });
+            }
+        }
+        emit_queue(&app, &state.queue);
     }
 }
 

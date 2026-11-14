@@ -1,6 +1,14 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import PostPanel from "$lib/PostPanel.svelte";
-  import { api, errorText, thumbUrl, type BrowsePost } from "$lib/api";
+  import { api, errorText, thumbUrl, type BrowsePost, type Job } from "$lib/api";
+
+  let {
+    provider,
+    providerName = "",
+    allowsBatch = false,
+  }: { provider: string; providerName?: string; allowsBatch?: boolean } = $props();
 
   let query = $state("");
   let activeQuery = $state<string | null>(null);
@@ -17,6 +25,15 @@
   const MAX_THUMB_RETRIES = 2;
   let sentinel = $state<HTMLDivElement | null>(null);
 
+  // Multi-select for the download queue.
+  let selectMode = $state(false);
+  let picked = $state<Set<string>>(new Set());
+  let lastPicked: number | null = null;
+  // Posts already in the library, and ones currently queued.
+  let have = $state<Set<string>>(new Set());
+  let queued = $state<Set<string>>(new Set());
+  let queueMsg = $state<{ kind: "ok" | "err"; text: string } | null>(null);
+
   // Bumped on every new search so late responses from an old search are ignored.
   let generation = 0;
 
@@ -32,6 +49,8 @@
     selected = null;
     error = null;
     thumbRetries = {};
+    picked = new Set();
+    lastPicked = null;
     loadMore();
   }
 
@@ -44,11 +63,13 @@
       if (gen !== generation) return;
       // New uploads shift pages while you scroll; skip posts we already have.
       const seen = new Set(posts.map((p) => p.id));
-      posts = [...posts, ...page.posts.filter((p) => !seen.has(p.id))];
+      const fresh = page.posts.filter((p) => !seen.has(p.id));
+      posts = [...posts, ...fresh];
       total = page.total;
       hasMore = page.has_more;
       depthLimited = page.depth_limited;
       nextPage = page.page + 1;
+      markDownloaded(fresh);
     } catch (err) {
       if (gen !== generation) return;
       error = errorText(err);
@@ -57,6 +78,26 @@
       if (gen === generation) loading = false;
     }
   }
+
+  async function markDownloaded(list: BrowsePost[]) {
+    if (!list.length) return;
+    try {
+      const ids = await api.localStatusMany(provider, list.map((p) => ({ id: p.id, md5: p.md5 })));
+      if (ids.length) have = new Set([...have, ...ids]);
+    } catch {
+      /* library unavailable: no badges */
+    }
+  }
+
+  // Keep badges in sync with the queue.
+  let unlisten: UnlistenFn | null = null;
+  listen<Job[]>("queue-updated", (e) => {
+    const mine = e.payload.filter((j) => j.provider === provider);
+    queued = new Set(mine.filter((j) => j.state === "queued" || j.state === "downloading").map((j) => j.id));
+    const done = mine.filter((j) => j.state === "done" || j.state === "duplicate").map((j) => j.id);
+    if (done.some((id) => !have.has(id))) have = new Set([...have, ...done]);
+  }).then((u) => (unlisten = u));
+  onDestroy(() => unlisten?.());
 
   // Load the next page when the bottom sentinel scrolls near the viewport.
   $effect(() => {
@@ -76,6 +117,54 @@
     const current = query.trim().split(/\s+/).filter(Boolean);
     query = add ? [...current.filter((t) => t !== tag), tag].join(" ") : tag;
     search();
+  }
+
+  function onTile(e: MouseEvent, p: BrowsePost, index: number) {
+    const toggle = selectMode || e.ctrlKey || e.metaKey || e.shiftKey;
+    if (!toggle) {
+      selected = p;
+      return;
+    }
+    if (!allowsBatch) {
+      queueMsg = { kind: "err", text: `Multi-download isn't available for ${providerName || provider}.` };
+      return;
+    }
+    const next = new Set(picked);
+    if (e.shiftKey && lastPicked !== null) {
+      const [a, b] = [Math.min(lastPicked, index), Math.max(lastPicked, index)];
+      for (const q of posts.slice(a, b + 1)) if (!have.has(q.id)) next.add(q.id);
+    } else if (next.has(p.id)) {
+      next.delete(p.id);
+    } else {
+      next.add(p.id);
+    }
+    lastPicked = index;
+    picked = next;
+  }
+
+  function selectAllLoaded() {
+    picked = new Set(posts.filter((p) => !have.has(p.id) && !queued.has(p.id)).map((p) => p.id));
+  }
+
+  function clearPicked() {
+    picked = new Set();
+    lastPicked = null;
+  }
+
+  async function downloadPicked() {
+    const items = posts.filter((p) => picked.has(p.id)).map((p) => ({ id: p.id, thumb_key: p.thumb_key }));
+    if (!items.length) return;
+    try {
+      const n = await api.queueAdd(provider, items);
+      queueMsg = {
+        kind: "ok",
+        text: n ? `Queued ${n} download${n === 1 ? "" : "s"}. See the Downloads tab.` : "Those are already queued or downloaded.",
+      };
+      clearPicked();
+      selectMode = false;
+    } catch (err) {
+      queueMsg = { kind: "err", text: errorText(err) };
+    }
   }
 
   // The image server sometimes says "slow down"; the backend already waits
@@ -107,6 +196,19 @@
       autocomplete="off"
     />
     <button type="submit" disabled={loading && posts.length === 0}>Search</button>
+    <button
+      type="button"
+      class="ghost"
+      class:on={selectMode}
+      disabled={!allowsBatch}
+      title={allowsBatch
+        ? "Pick several posts to download (or Ctrl/Shift+click tiles)"
+        : `Multi-download is disabled for ${providerName || provider}`}
+      onclick={() => {
+        selectMode = !selectMode;
+        if (!selectMode) clearPicked();
+      }}>{selectMode ? "Done selecting" : "Select"}</button
+    >
   </form>
 
   <div class="status">
@@ -118,14 +220,31 @@
     {/if}
   </div>
 
+  {#if picked.size || selectMode}
+    <div class="selbar">
+      <strong>{picked.size} selected</strong>
+      <button disabled={!picked.size} onclick={downloadPicked}>Download {picked.size || ""} originals</button>
+      <button class="ghost" onclick={selectAllLoaded} disabled={!posts.length}>Select all loaded (not yet downloaded)</button>
+      <button class="ghost" onclick={clearPicked} disabled={!picked.size}>Clear</button>
+      <span class="dim">Ctrl+click toggles · Shift+click selects a range</span>
+    </div>
+  {/if}
+  {#if queueMsg}
+    <p class={`qmsg ${queueMsg.kind}`}>
+      {queueMsg.text}
+      <button class="ghost tiny" onclick={() => (queueMsg = null)} aria-label="Dismiss">✕</button>
+    </p>
+  {/if}
+
   <div class="body">
     <div class="grid-wrap">
       <div class="grid">
-        {#each posts as p (p.id)}
+        {#each posts as p, i (p.id)}
           <button
             class="tile"
             class:sel={selected?.id === p.id}
-            onclick={() => (selected = p)}
+            class:picked={picked.has(p.id)}
+            onclick={(e) => onTile(e, p, i)}
             title={`#${p.id} · ${fmtRes(p)}`}
           >
             {#if p.thumb_key && (thumbRetries[p.id] ?? 0) <= MAX_THUMB_RETRIES}
@@ -140,6 +259,13 @@
               <span class="nothumb">no preview</span>
             {/if}
             {#if p.file_ext}<span class="badge">{p.file_ext}</span>{/if}
+            {#if have.has(p.id)}
+              <span class="mark have" title="In your library">✓</span>
+            {:else if queued.has(p.id)}
+              <span class="mark queued" title="Queued">⇣</span>
+            {:else if picked.has(p.id)}
+              <span class="mark pick">●</span>
+            {/if}
           </button>
         {/each}
       </div>
@@ -149,7 +275,7 @@
       {#if error}
         <p class="err">{error} <button class="ghost" onclick={() => { error = null; hasMore = true; loadMore(); }}>Retry</button></p>
       {:else if depthLimited}
-        <p class="note">Reached Gelbooru's search depth limit (~20,000 results). Add tags to narrow the search.</p>
+        <p class="note">Reached this board's search depth limit. Add tags to narrow the search.</p>
       {:else if activeQuery !== null && !hasMore && !loading}
         <p class="note">{posts.length ? "End of results." : "No results."}</p>
       {/if}
@@ -169,23 +295,40 @@
     border: 1px solid #353640; border-radius: 6px; font: inherit;
   }
   .status { padding: 2px 18px 8px; color: #9a9ba3; font-size: 0.85rem; }
+  .selbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 16px 8px;
+    padding: 8px 12px; background: #1d2030; border: 1px solid #343a63; border-radius: 8px; font-size: 0.88rem;
+  }
+  .qmsg { margin: 0 18px 8px; font-size: 0.85rem; }
+  .qmsg.ok { color: #6fd39a; }
+  .qmsg.err { color: #f07b7b; }
+  .dim { color: #7d7e87; font-size: 0.8rem; }
   .body { flex: 1; display: flex; min-height: 0; }
   .grid-wrap { flex: 1; overflow-y: auto; padding: 0 16px 24px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
   .tile {
     position: relative; aspect-ratio: 1; padding: 0; border-radius: 6px; overflow: hidden;
-    background: #1f2026; border: 2px solid transparent; cursor: pointer;
+    background: #1f2026; border: 2px solid transparent; cursor: pointer; color: inherit;
     display: flex; align-items: center; justify-content: center;
     content-visibility: auto; contain-intrinsic-size: 150px 150px;
   }
   .tile:hover { border-color: #3a3b46; }
   .tile.sel { border-color: #4b5bd6; }
+  .tile.picked { border-color: #8fa0ff; box-shadow: inset 0 0 0 2px #8fa0ff; }
+  .tile.picked img { opacity: 0.75; }
   .tile img { width: 100%; height: 100%; object-fit: contain; }
   .nothumb { color: #6b6c75; font-size: 0.8rem; }
   .badge {
     position: absolute; right: 4px; bottom: 4px; padding: 1px 5px; border-radius: 4px;
     background: rgba(0, 0, 0, 0.65); color: #ddd; font-size: 0.7rem; text-transform: uppercase;
   }
+  .mark {
+    position: absolute; left: 4px; top: 4px; min-width: 20px; height: 20px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700;
+  }
+  .mark.have { background: #1d6b40; color: #fff; }
+  .mark.queued { background: #6b5a1d; color: #fff; }
+  .mark.pick { background: #4b5bd6; color: #fff; }
   .sentinel { height: 1px; }
   .note, .err { text-align: center; color: #9a9ba3; margin: 18px 0; }
   .err { color: #f07b7b; }
@@ -193,7 +336,9 @@
     padding: 8px 14px; border-radius: 6px; border: 1px solid #4b5bd6; background: #4b5bd6; color: white;
     font: inherit; cursor: pointer;
   }
+  .selbar button { padding: 5px 10px; font-size: 0.85rem; }
   button.ghost { background: transparent; border-color: #4a4b55; color: #c9c9cf; }
+  button.ghost.on { border-color: #8fa0ff; color: #fff; }
+  button.tiny { padding: 0 6px; font-size: 0.75rem; }
   button:disabled { opacity: 0.45; cursor: default; }
-  .tile.sel, .tile { color: inherit; }
 </style>

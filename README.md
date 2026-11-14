@@ -25,6 +25,7 @@ src/                    UI (SvelteKit, SPA mode)
   lib/Browse.svelte     online gallery
   lib/Settings.svelte   setup & settings
   lib/Library.svelte    offline library (+ LocalPanel.svelte)
+  lib/Downloads.svelte  download queue
 src-tauri/src/
   commands.rs           Tauri IPC surface
   error.rs              redacted error type
@@ -38,6 +39,7 @@ src-tauri/src/
   storage/              library folder layout + sidecar JSON
   db/                   SQLite index
   library/              offline query language, search, facets, local thumbnails
+  queue/                download queue (sequential worker, retry, cancel)
   settings/             settings.json + OS keychain credentials
 docs/PLAN.md            feasibility report & roadmap
 ```
@@ -50,6 +52,7 @@ docs/PLAN.md            feasibility report & roadmap
 - [x] M3 — Post detail + categorized tags + sample preview
 - [x] Provider picker (Danbooru / Gelbooru / Rule34); Gelbooru images blocked by hotlink protection
 - [x] M4 — Single download (MD5-verified, atomic) + SQLite index + sidecars + rebuild
+- [x] M6 — Download queue: multi-select in Browse, downloaded badges, Downloads tab (sequential, retry, cancel). Enabled per board (Danbooru only; Gelbooru never)
 - [x] M5 — Offline Library tab: filters (tags, artist/char/copy, rating, board, type), facets, sort, local thumbnails — **MVP complete**
 
 ## Library filter syntax

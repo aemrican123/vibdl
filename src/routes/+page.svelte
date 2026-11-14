@@ -1,24 +1,35 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import Browse from "$lib/Browse.svelte";
+  import Downloads from "$lib/Downloads.svelte";
   import Library from "$lib/Library.svelte";
   import Settings from "$lib/Settings.svelte";
-  import { api } from "$lib/api";
+  import { api, type Job } from "$lib/api";
 
-  type Tab = "browse" | "library" | "settings";
+  type Tab = "browse" | "library" | "downloads" | "settings";
   let tab = $state<Tab>("settings");
   let ready = $state(false); // age confirmed + active board usable
   let ageOk = $state(false); // Library only needs the age confirmation
   let libraryView = $state<{ refresh: () => void } | null>(null);
   let provider = $state(""); // active board id
   let providerName = $state("");
+  let allowsBatch = $state(false);
+  let activeJobs = $state(0);
+  let unlisten: UnlistenFn | null = null;
+  listen<Job[]>("queue-updated", (e) => {
+    activeJobs = e.payload.filter((j) => j.state === "queued" || j.state === "downloading").length;
+  }).then((u) => (unlisten = u));
+  onDestroy(() => unlisten?.());
 
   async function refreshReady() {
     try {
       const s = await api.getSettings();
       const [c, list] = await Promise.all([api.credentialStatus(s.active_provider), api.listProviders()]);
       provider = s.active_provider;
-      providerName = list.find((p) => p.id === provider)?.name ?? provider;
+      const meta = list.find((p) => p.id === provider);
+      providerName = meta?.name ?? provider;
+      allowsBatch = meta?.allows_batch ?? false;
       ageOk = s.age_confirmed;
       ready = s.age_confirmed && c.ready;
     } catch {
@@ -48,6 +59,9 @@
           tab = "library";
         }}>Library</button
       >
+      <button class:active={tab === "downloads"} disabled={!ageOk} onclick={() => (tab = "downloads")}>
+        Downloads{activeJobs ? ` (${activeJobs})` : ""}
+      </button>
       <button class:active={tab === "settings"} onclick={() => (tab = "settings")}>Settings</button>
     </nav>
   </header>
@@ -56,10 +70,13 @@
     <!-- Keep Browse mounted while switching tabs so results and scroll survive. -->
     <div class="pane" class:hidden={tab !== "browse"}>
       <!-- Switching boards starts a fresh browser. -->
-      {#if ready}{#key provider}<Browse />{/key}{/if}
+      {#if ready}{#key provider}<Browse {provider} {providerName} {allowsBatch} />{/key}{/if}
     </div>
     <div class="pane" class:hidden={tab !== "library"}>
       {#if ageOk}<Library bind:this={libraryView} />{/if}
+    </div>
+    <div class="pane scroll" class:hidden={tab !== "downloads"}>
+      {#if ageOk}<Downloads />{/if}
     </div>
     {#if tab === "settings"}
       <div class="pane scroll"><Settings onchange={refreshReady} /></div>

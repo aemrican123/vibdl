@@ -38,6 +38,7 @@ I could **not** open any gelbooru.com page from this research environment. The w
   - Requires personal use only.
   - Doesn't grant app access to images, and hotlink protection enforces this.
   - **Policy for VIBDL:** Gelbooru stays search/metadata only. No batch or automated downloads, ever. Image access only with explicit written permission from Gelbooru staff. VIBDL shows no ads.
+- **M6 (2026-11-14):** The download queue only processes posts the user selects. No "download all results". It runs sequentially at ≤ 1 download/s, retries network errors 2× with backoff, and doesn't persist across restarts. Per-board `allows_batch`: Danbooru on, **pending the owner's review of Danbooru's terms**; Gelbooru off permanently; Rule34 off until its terms are reviewed.
 - Still [UNVERIFIED]: the behavior without a key, the tag endpoint's `type` values against a real response, the `created_at` format, and whether thumbnails need a Referer. These get checked as M2/M3 exercise them.
 
 ---

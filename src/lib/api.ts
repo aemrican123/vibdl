@@ -20,6 +20,29 @@ export interface ProviderInfo {
   account_label: string;
   key_help: string;
   warning: string | null;
+  /** Multi-select download queue allowed for this board. */
+  allows_batch: boolean;
+}
+
+export type JobState = "queued" | "downloading" | "done" | "duplicate" | "failed" | "cancelled";
+
+export interface Job {
+  key: string;
+  provider: string;
+  id: string;
+  state: JobState;
+  bytes: number;
+  total: number | null;
+  error: string | null;
+  attempts: number;
+  local_path: string | null;
+  thumb_key: string | null;
+}
+
+export interface QueueProgress {
+  key: string;
+  bytes: number;
+  total: number | null;
 }
 
 export interface CredentialStatus {
@@ -183,6 +206,9 @@ export const libraryFileUrl = (i: { provider: string; md5: string }) =>
 /** URL the webview can load for a registered thumbnail key. */
 export const thumbUrl = (key: string) => convertFileSrc(key, "thumb");
 
+export const fmtSize = (b: number) =>
+  b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) => invoke<Settings>("save_settings", { settings }),
@@ -203,6 +229,14 @@ export const api = {
   libraryFacets: (q: string) => invoke<Facets>("library_facets", { q }),
   libraryDetails: (provider: string, remoteId: string) =>
     invoke<LibraryDetails | null>("library_details", { provider, remoteId }),
+  localStatusMany: (provider: string, items: { id: string; md5: string | null }[]) =>
+    invoke<string[]>("local_status_many", { provider, items }),
+  queueAdd: (provider: string, items: { id: string; thumb_key: string | null }[]) =>
+    invoke<number>("queue_add", { provider, items }),
+  queueList: () => invoke<Job[]>("queue_list"),
+  queueCancel: (key: string | null) => invoke<number>("queue_cancel", { key }),
+  queueRetryFailed: () => invoke<number>("queue_retry_failed"),
+  queueClearFinished: () => invoke<void>("queue_clear_finished"),
   browseSearch: (tags: string, page: number) => invoke<BrowsePage>("browse_search", { tags, page }),
 };
 

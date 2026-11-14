@@ -105,6 +105,9 @@ pub struct ProviderInfo {
     pub key_help: &'static str,
     /// Known limitation shown in the picker, if any.
     pub warning: Option<&'static str>,
+    /// Whether the multi-select download queue may be used with this board.
+    /// Off unless the board's terms have been reviewed and allow it.
+    pub allows_batch: bool,
 }
 
 pub const PROVIDERS: [ProviderInfo; 3] = [
@@ -115,6 +118,7 @@ pub const PROVIDERS: [ProviderInfo; 3] = [
         account_label: "Username",
         key_help: "Optional. Danbooru → My Account → API Key. Works without an account (2-tag searches).",
         warning: None,
+        allows_batch: true,
     },
     ProviderInfo {
         id: gelbooru::GELBOORU.id,
@@ -125,6 +129,8 @@ pub const PROVIDERS: [ProviderInfo; 3] = [
         warning: Some(
             "Gelbooru's hotlink protection blocks thumbnails, previews and downloads for apps. Search and metadata only.",
         ),
+        // Gelbooru TOS forbids automated retrieval; never batch (docs/PLAN.md).
+        allows_batch: false,
     },
     ProviderInfo {
         id: gelbooru::RULE34.id,
@@ -133,6 +139,7 @@ pub const PROVIDERS: [ProviderInfo; 3] = [
         account_label: "User ID",
         key_help: "rule34.xxx → My Account → Options (API access credentials).",
         warning: Some("Untested: image access and tag categories not yet verified."),
+        allows_batch: false,
     },
 ];
 

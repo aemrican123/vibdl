@@ -11,6 +11,7 @@
 //!   storage/    library folder layout + sidecar JSON
 //!   db/         SQLite index of the library
 //!   library/    offline search/filter/facets + local thumbnails
+//!   queue/      multi-select download queue (sequential, retry, cancel)
 
 pub mod browse;
 pub mod commands;
@@ -21,6 +22,7 @@ pub mod library;
 pub mod metadata;
 pub mod net;
 pub mod providers;
+pub mod queue;
 pub mod settings;
 pub mod storage;
 
@@ -127,7 +129,9 @@ pub fn run() {
                 default_library_dir,
                 library: Mutex::new(None),
                 thumb_gen: tokio::sync::Semaphore::new(2),
+                queue: queue::Queue::default(),
             });
+            tauri::async_runtime::spawn(commands::queue_worker(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -149,6 +153,12 @@ pub fn run() {
             commands::library_search,
             commands::library_facets,
             commands::library_details,
+            commands::local_status_many,
+            commands::queue_add,
+            commands::queue_list,
+            commands::queue_cancel,
+            commands::queue_retry_failed,
+            commands::queue_clear_finished,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -15,6 +15,8 @@ pub enum AppError {
     Network(String),
     #[error("The imageboard rejected the request: {0}")]
     Rejected(String),
+    #[error("Cancelled.")]
+    Cancelled,
     #[error("Unexpected response format: {0}")]
     Parse(String),
     #[error("No credentials saved for {0}. Add them in Settings.")]
