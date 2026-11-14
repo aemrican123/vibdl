@@ -59,6 +59,18 @@ pub fn build_http() -> AppResult<reqwest::Client> {
         .build()?)
 }
 
+/// Like `build_http` but never follows redirects, for static image hosts:
+/// a redirect there means "not served" (missing file or refused request), and
+/// following it would just download an HTML page.
+pub fn build_http_no_redirect() -> AppResult<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()?)
+}
+
 impl ApiClient {
     pub fn new(min_interval: Duration) -> AppResult<Self> {
         let http = build_http()?;
@@ -112,6 +124,15 @@ impl ApiClient {
                             attempt += 1;
                         }
                         StatusCode::TOO_MANY_REQUESTS => return Err(AppError::RateLimited),
+                        s if s.is_client_error() && s != StatusCode::NOT_FOUND => {
+                            // Boards explain bad requests (e.g. Danbooru's tag
+                            // limit) in a JSON `message`; surface it.
+                            let text = resp.text().await.unwrap_or_default();
+                            return Err(match rejection_message(&text) {
+                                Some(m) => AppError::Rejected(m),
+                                None => AppError::Http(s.as_u16()),
+                            });
+                        }
                         s => return Err(AppError::Http(s.as_u16())),
                     }
                 }
@@ -129,6 +150,12 @@ fn parse_json_body(text: &str) -> AppResult<Value> {
         let preview: String = trimmed.chars().take(120).collect();
         AppError::Parse(format!("{e}; body starts with: {}", redact(&preview)))
     })
+}
+
+fn rejection_message(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body.trim()).ok()?;
+    let msg = v.get("message").or_else(|| v.get("reason"))?.as_str()?.trim();
+    (!msg.is_empty()).then(|| redact(&msg.chars().take(200).collect::<String>()))
 }
 
 fn backoff(attempt: u32) -> Duration {
@@ -184,6 +211,16 @@ mod tests {
     fn empty_body_is_null() {
         assert_eq!(parse_json_body("  \n").unwrap(), Value::Null);
         assert!(parse_json_body("<html>").is_err());
+    }
+
+    #[test]
+    fn extracts_rejection_message() {
+        assert_eq!(
+            rejection_message(r#"{"success":false,"message":"You cannot search for more than 2 tags at a time."}"#).as_deref(),
+            Some("You cannot search for more than 2 tags at a time.")
+        );
+        assert_eq!(rejection_message("<html>"), None);
+        assert_eq!(rejection_message(r#"{"message":""}"#), None);
     }
 
     #[test]

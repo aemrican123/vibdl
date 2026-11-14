@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  import PostPanel from "$lib/PostPanel.svelte";
   import { api, errorText, thumbUrl, type BrowsePost } from "$lib/api";
 
   let query = $state("");
@@ -12,7 +12,9 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let selected = $state<BrowsePost | null>(null);
-  let failedThumbs = $state<Set<string>>(new Set());
+  // Per-post thumbnail retry count; > MAX_THUMB_RETRIES = give up.
+  let thumbRetries = $state<Record<string, number>>({});
+  const MAX_THUMB_RETRIES = 2;
   let sentinel = $state<HTMLDivElement | null>(null);
 
   // Bumped on every new search so late responses from an old search are ignored.
@@ -29,7 +31,7 @@
     total = null;
     selected = null;
     error = null;
-    failedThumbs = new Set();
+    thumbRetries = {};
     loadMore();
   }
 
@@ -69,9 +71,29 @@
     return () => io.disconnect();
   });
 
-  function markFailed(id: string) {
-    failedThumbs = new Set(failedThumbs).add(id);
+  // From the detail panel: click = search that tag, shift+click = add it.
+  function searchTag(tag: string, add: boolean) {
+    const current = query.trim().split(/\s+/).filter(Boolean);
+    query = add ? [...current.filter((t) => t !== tag), tag].join(" ") : tag;
+    search();
   }
+
+  // The image server sometimes says "slow down"; the backend already waits
+  // and retries, and if a tile still fails we try it again a bit later.
+  function thumbFailed(id: string) {
+    const n = (thumbRetries[id] ?? 0) + 1;
+    const gen = generation;
+    if (n > MAX_THUMB_RETRIES) {
+      thumbRetries = { ...thumbRetries, [id]: n };
+      return;
+    }
+    setTimeout(() => {
+      if (gen === generation) thumbRetries = { ...thumbRetries, [id]: n };
+    }, 15000 * n);
+  }
+
+  const thumbSrc = (key: string, id: string) =>
+    thumbRetries[id] ? `${thumbUrl(key)}?retry=${thumbRetries[id]}` : thumbUrl(key);
 
   const fmtRes = (p: BrowsePost) => (p.width && p.height ? `${p.width}×${p.height}` : "?");
 </script>
@@ -80,7 +102,7 @@
   <form class="searchbar" onsubmit={search}>
     <input
       bind:value={query}
-      placeholder="Search Gelbooru tags, e.g. long_hair blue_eyes -monochrome"
+      placeholder="Search tags, e.g. long_hair blue_eyes (Danbooru: max 2 tags without Gold)"
       spellcheck="false"
       autocomplete="off"
     />
@@ -106,13 +128,13 @@
             onclick={() => (selected = p)}
             title={`#${p.id} · ${fmtRes(p)}`}
           >
-            {#if p.thumb_key && !failedThumbs.has(p.id)}
+            {#if p.thumb_key && (thumbRetries[p.id] ?? 0) <= MAX_THUMB_RETRIES}
               <img
-                src={thumbUrl(p.thumb_key)}
+                src={thumbSrc(p.thumb_key, p.id)}
                 alt={`Post ${p.id}`}
                 loading="lazy"
                 decoding="async"
-                onerror={() => markFailed(p.id)}
+                onerror={() => thumbFailed(p.id)}
               />
             {:else}
               <span class="nothumb">no preview</span>
@@ -134,23 +156,7 @@
     </div>
 
     {#if selected}
-      <aside class="info">
-        <div class="row-between">
-          <h3>Post #{selected.id}</h3>
-          <button class="ghost small" onclick={() => (selected = null)} aria-label="Close">✕</button>
-        </div>
-        <dl>
-          <dt>Resolution</dt><dd>{fmtRes(selected)}</dd>
-          <dt>Format</dt><dd>{selected.file_ext ?? "?"}</dd>
-          <dt>Rating</dt><dd>{selected.rating ?? "?"}</dd>
-          <dt>Tags</dt><dd>{selected.tags.length}</dd>
-        </dl>
-        <button onclick={() => openUrl(selected!.post_url)}>Open on Gelbooru</button>
-        <p class="hint">Tag categories, sample preview and downloading come in the next milestones.</p>
-        <div class="tags">
-          {#each selected.tags as t}<span>{t}</span>{/each}
-        </div>
-      </aside>
+      <PostPanel post={selected} onclose={() => (selected = null)} ontag={searchTag} />
     {/if}
   </div>
 </div>
@@ -183,24 +189,11 @@
   .sentinel { height: 1px; }
   .note, .err { text-align: center; color: #9a9ba3; margin: 18px 0; }
   .err { color: #f07b7b; }
-  .info {
-    width: 300px; flex-shrink: 0; overflow-y: auto; padding: 14px 16px;
-    border-left: 1px solid #2c2d35; background: #1a1b20;
-  }
-  .row-between { display: flex; justify-content: space-between; align-items: center; }
-  h3 { margin: 0; font-size: 1rem; }
-  dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 0.88rem; margin: 12px 0 14px; }
-  dt { color: #9a9ba3; }
-  dd { margin: 0; }
-  .hint { color: #7d7e87; font-size: 0.8rem; }
-  .tags { display: flex; flex-wrap: wrap; gap: 4px; }
-  .tags span { background: #26272e; border-radius: 4px; padding: 2px 6px; font-size: 0.78rem; }
   button {
     padding: 8px 14px; border-radius: 6px; border: 1px solid #4b5bd6; background: #4b5bd6; color: white;
     font: inherit; cursor: pointer;
   }
   button.ghost { background: transparent; border-color: #4a4b55; color: #c9c9cf; }
-  button.small { padding: 2px 8px; }
   button:disabled { opacity: 0.45; cursor: default; }
   .tile.sel, .tile { color: inherit; }
 </style>

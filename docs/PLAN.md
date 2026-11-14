@@ -30,6 +30,8 @@ I could **not** open any gelbooru.com page from this research environment. The w
 - **[LIVE]** There is **no file-size field**. VIBDL records the size at download time.
 - **[LIVE]** The `rating:general` filter works, which confirms the 4-level vocabulary (general/sensitive/questionable/explicit).
 - **[USER-VERIFIED]** The owner reviewed `tos.php` and judged personal use acceptable. VIBDL is personal use only and won't be distributed.
+- **[LIVE] BLOCKER (thumbnails):** `img4.gelbooru.com` answers VIBDL's thumbnail requests (`preview_url`) with **302 → `https://gelbooru.com/hotlink.php?hash=…`**. That is Gelbooru's deliberate hotlink protection, not missing files. VIBDL will **not** spoof a Referer or browser identity to get around it. Open questions: what hotlink.php says the policy is, whether `sample_url`/`file_url` (downloads) are blocked the same way, and whether Gelbooru offers an approved method for API clients.
+- **DECISION (2026-11-14):** Danbooru becomes the primary board. Gelbooru and Rule34 stay selectable in a provider picker. Gelbooru is search/metadata only until an approved image-access method exists.
 - Still [UNVERIFIED]: the behavior without a key, the tag endpoint's `type` values against a real response, the `created_at` format, and whether thumbnails need a Referer. These get checked as M2/M3 exercise them.
 
 ---

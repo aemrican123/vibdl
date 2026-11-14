@@ -1,6 +1,6 @@
 # VIBDL — Vibecoded Image Board Downloader Library
 
-Personal desktop app for browsing imageboards, downloading selected originals with their metadata, and organizing them in a searchable local library. Gelbooru first; more boards later via the provider interface.
+Personal desktop app for browsing imageboards, downloading selected originals with their metadata, and organizing them in a searchable local library. Boards: **Danbooru** (default), Gelbooru (search/metadata only: its hotlink protection blocks images for apps), Rule34 (untested). Pick one in Settings.
 
 Personal use only — not distributed. Full plan: [docs/PLAN.md](docs/PLAN.md).
 
@@ -30,7 +30,9 @@ src-tauri/src/
   net/                  HTTP client, rate limiter, retry/backoff, secret redaction
   browse/               gallery queries, rating filter, thumb:// protocol + disk cache
   providers/            ImageboardProvider trait + shared types
-    gelbooru/           Gelbooru dapi client + tolerant parser + fixtures
+    danbooru/           Danbooru client (inline tag categories) + parser + fixtures
+    gelbooru/           Gelbooru-engine client (Gelbooru, Rule34) + parser + fixtures
+  metadata/             tag categorization + cache
   settings/             settings.json + OS keychain credentials
 docs/PLAN.md            feasibility report & roadmap
 ```
@@ -40,7 +42,8 @@ docs/PLAN.md            feasibility report & roadmap
 - [x] M0 — API fields/auth verified live; TOS reviewed (personal use)
 - [x] M1 — Skeleton, settings, keychain credentials, rate-limited client, Gelbooru provider
 - [x] M2 — Online browser (thumbnail grid, infinite scroll, thumbnail disk cache)
-- [ ] M3 — Post detail + categorized tags
+- [x] M3 — Post detail + categorized tags + sample preview
+- [x] Provider picker (Danbooru / Gelbooru / Rule34); Gelbooru images blocked by hotlink protection
 - [ ] M4 — Single download + SQLite + sidecars
 - [ ] M5 — Local library (MVP)
 

@@ -1,16 +1,18 @@
 //! VIBDL — Vibecoded Image Board Downloader Library.
 //!
 //! Module map (see docs/PLAN.md):
-//!   providers/  imageboard integrations (Gelbooru first)
+//!   providers/  imageboard integrations (Danbooru, Gelbooru, Rule34)
 //!   browse/     online gallery queries + `thumb` URI scheme / disk cache
 //!   net/        shared HTTP client, rate limiting, redaction
 //!   settings/   settings file + OS-keychain credentials
 //!   commands    Tauri IPC surface
-//! Coming in later milestones: metadata/, downloads/, storage/, db/, library/
+//!   metadata/   tag categorization + tag-type cache
+//! Coming in later milestones: downloads/, storage/, db/, library/
 
 pub mod browse;
 pub mod commands;
 pub mod error;
+pub mod metadata;
 pub mod net;
 pub mod providers;
 pub mod settings;
@@ -39,7 +41,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        // UI loads thumbnails as thumb://localhost/<key> (http://thumb.localhost/<key>
+        // UI loads thumbnails and sample previews as thumb://localhost/<key> (http://thumb.localhost/<key>
         // on Windows); the key must have been registered from an API response.
         .register_asynchronous_uri_scheme_protocol("thumb", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
@@ -73,7 +75,7 @@ pub fn run() {
             let api = net::ApiClient::new(Duration::from_millis(loaded.api_min_interval_ms))?;
 
             let thumb_dir = app.path().app_cache_dir()?.join("thumbs");
-            let thumbs = Thumbs::new(thumb_dir, loaded.thumb_cache_mb, net::build_http()?)?;
+            let thumbs = Thumbs::new(thumb_dir, loaded.thumb_cache_mb, net::build_http_no_redirect()?)?;
             let (dir, cap) = (thumbs.dir().to_path_buf(), thumbs.cap_bytes());
             tauri::async_runtime::spawn_blocking(move || thumbs::sweep(&dir, cap));
 
@@ -83,17 +85,21 @@ pub fn run() {
                 settings: Mutex::new(loaded),
                 api: Arc::new(api),
                 thumbs: Arc::new(thumbs),
+                posts: browse::PostCache::default(),
+                tag_cache: metadata::TagCache::default(),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::save_settings,
-            commands::gelbooru_credential_status,
-            commands::set_gelbooru_credentials,
-            commands::clear_gelbooru_credentials,
-            commands::test_gelbooru_connection,
+            commands::list_providers,
+            commands::credential_status,
+            commands::set_credentials,
+            commands::clear_credentials,
+            commands::test_connection,
             commands::browse_search,
+            commands::post_details,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

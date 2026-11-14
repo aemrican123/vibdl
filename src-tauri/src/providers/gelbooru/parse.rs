@@ -4,12 +4,12 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use super::{post_url, MAX_RESULT_DEPTH, PROVIDER_ID};
+use super::{post_url, Site};
 use crate::error::{AppError, AppResult};
 use crate::providers::{Page, RemotePost, TagCategory, TagInfo};
 
-pub fn page_within_depth(page: u32, limit: u32) -> bool {
-    (page as u64 + 1) * limit as u64 <= MAX_RESULT_DEPTH as u64
+pub fn page_within_depth(site: &Site, page: u32, limit: u32) -> bool {
+    (page as u64 + 1) * limit as u64 <= site.max_result_depth as u64
 }
 
 /// Gelbooru wraps lists as `{"@attributes": {...}, "<key>": [...]}`; a single
@@ -79,7 +79,7 @@ fn extension_of(name: &str) -> Option<String> {
         .then_some(ext)
 }
 
-pub fn post(v: &Value) -> Option<RemotePost> {
+pub fn post(site: &Site, v: &Value) -> Option<RemotePost> {
     let remote_id = get_str(v, "id")?;
     let file_url = get_str(v, "file_url");
     let file_ext = get_str(v, "image")
@@ -90,15 +90,17 @@ pub fn post(v: &Value) -> Option<RemotePost> {
         .unwrap_or_default();
 
     Some(RemotePost {
-        provider: PROVIDER_ID,
-        post_url: post_url(&remote_id),
+        provider: site.id,
+        post_url: post_url(site, &remote_id),
         remote_id,
-        md5: get_str(v, "md5").map(|m| m.to_ascii_lowercase()),
-        rating: get_str(v, "rating"),
+        // Rule34 calls the md5 "hash".
+        md5: get_str(v, "md5").or_else(|| get_str(v, "hash")).map(|m| m.to_ascii_lowercase()),
+        rating: get_str(v, "rating").map(|r| normalize_rating(&r)),
         width: get_u32(v, "width"),
         height: get_u32(v, "height"),
         file_url,
         file_ext,
+        file_size: None,
         sample_url: get_str(v, "sample_url"),
         preview_url: get_str(v, "preview_url"),
         preview_width: get_u32(v, "preview_width"),
@@ -106,20 +108,31 @@ pub fn post(v: &Value) -> Option<RemotePost> {
         source: get_str(v, "source"),
         created_at_raw: get_str(v, "created_at"),
         tags,
+        categorized: None,
         raw: v.clone(),
     })
 }
 
-pub fn posts_page(body: &Value, page: u32, limit: u32) -> AppResult<Page<RemotePost>> {
+fn normalize_rating(r: &str) -> String {
+    match r.trim().to_ascii_lowercase().as_str() {
+        "safe" | "g" => "general".into(),
+        "s" => "sensitive".into(),
+        "q" => "questionable".into(),
+        "e" => "explicit".into(),
+        other => other.into(),
+    }
+}
+
+pub fn posts_page(site: &Site, body: &Value, page: u32, limit: u32) -> AppResult<Page<RemotePost>> {
     let raw_items = items(body, "post")?;
-    let posts: Vec<RemotePost> = raw_items.iter().filter_map(|v| post(v)).collect();
+    let posts: Vec<RemotePost> = raw_items.iter().filter_map(|v| post(site, v)).collect();
     if posts.len() < raw_items.len() {
         tracing::warn!(skipped = raw_items.len() - posts.len(), "skipped posts without an id");
     }
 
     let total = attr_u64(body, "count");
     let offset = attr_u64(body, "offset").unwrap_or(page as u64 * limit as u64);
-    let next_in_depth = page_within_depth(page + 1, limit);
+    let next_in_depth = page_within_depth(site, page + 1, limit);
     let more_remote = match total {
         Some(t) => offset + (raw_items.len() as u64) < t,
         None => raw_items.len() as u32 >= limit,
@@ -188,6 +201,7 @@ pub fn merge_requested(requested: &[String], found: Vec<TagInfo>) -> Vec<TagInfo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::gelbooru::{GELBOORU, RULE34};
 
     // SYNTHETIC fixtures shaped after open-source clients. Replace with real
     // captures (credentials removed) during Milestone 0.
@@ -201,7 +215,7 @@ mod tests {
 
     #[test]
     fn parses_posts_page() {
-        let page = posts_page(&json(POSTS), 0, 2).unwrap();
+        let page = posts_page(&GELBOORU, &json(POSTS), 0, 2).unwrap();
         assert_eq!(page.items.len(), 2);
         assert_eq!(page.total, Some(57));
         assert!(page.has_more);
@@ -225,25 +239,25 @@ mod tests {
 
     #[test]
     fn single_object_and_empty_results() {
-        let page = posts_page(&json(SINGLE), 0, 1).unwrap();
+        let page = posts_page(&GELBOORU, &json(SINGLE), 0, 1).unwrap();
         assert_eq!(page.items.len(), 1);
         assert!(!page.has_more);
 
         let empty = json(r#"{"@attributes":{"limit":100,"offset":0,"count":0}}"#);
-        let page = posts_page(&empty, 0, 100).unwrap();
+        let page = posts_page(&GELBOORU, &empty, 0, 100).unwrap();
         assert!(page.items.is_empty());
         assert!(!page.has_more);
 
-        assert!(posts_page(&Value::Null, 0, 100).unwrap().items.is_empty());
+        assert!(posts_page(&GELBOORU, &Value::Null, 0, 100).unwrap().items.is_empty());
     }
 
     #[test]
     fn depth_cap() {
-        assert!(page_within_depth(0, 100));
-        assert!(page_within_depth(199, 100));
-        assert!(!page_within_depth(200, 100));
+        assert!(page_within_depth(&GELBOORU, 0, 100));
+        assert!(page_within_depth(&GELBOORU, 199, 100));
+        assert!(!page_within_depth(&GELBOORU, 200, 100));
         let body = json(r#"{"@attributes":{"limit":100,"offset":19900,"count":90000},"post":[]}"#);
-        let page = posts_page(&body, 199, 100).unwrap();
+        let page = posts_page(&GELBOORU, &body, 199, 100).unwrap();
         assert!(!page.has_more);
         assert!(page.depth_limited);
     }
@@ -278,6 +292,19 @@ mod tests {
             ]
         );
         assert_eq!(merged[3].count, Some(1_500_000));
+    }
+
+    #[test]
+    fn rule34_style_bare_array_with_hash() {
+        let body = json(r#"[{"id":5,"hash":"ABCDEFABCDEFABCDEFABCDEFABCDEFAB","rating":"safe","tags":"a b",
+            "file_url":"https://x/images/1/ab.jpeg","image":"ab.jpeg"}]"#);
+        let page = posts_page(&RULE34, &body, 0, 1).unwrap();
+        let p = &page.items[0];
+        assert_eq!(p.provider, "rule34");
+        assert_eq!(p.md5.as_deref(), Some("abcdefabcdefabcdefabcdefabcdefab"));
+        assert_eq!(p.rating.as_deref(), Some("general"));
+        assert_eq!(p.post_url, "https://rule34.xxx/index.php?page=post&s=view&id=5");
+        assert!(page.has_more, "no count: full page implies more");
     }
 
     #[test]

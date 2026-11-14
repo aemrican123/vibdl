@@ -3,6 +3,7 @@
 
 pub mod credentials;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -20,7 +21,13 @@ pub struct Settings {
     pub thumb_cache_mb: u32,
     /// Ratings shown in browse/library. Default: general only.
     pub allowed_ratings: Vec<String>,
-    /// Gelbooru user ID (not secret; the API key lives in the keychain).
+    /// Board used for online browsing (see `providers::PROVIDERS`).
+    pub active_provider: String,
+    /// Per-board account name / user ID (not secret; API keys live in the
+    /// OS keychain).
+    pub accounts: BTreeMap<String, String>,
+    /// Legacy (v0.1): migrated into `accounts["gelbooru"]` on load.
+    #[serde(skip_serializing)]
     pub gelbooru_user_id: Option<String>,
     /// Minimum gap between API requests (applies after restart).
     pub api_min_interval_ms: u64,
@@ -34,6 +41,8 @@ impl Default for Settings {
             library_dir: None,
             thumb_cache_mb: 500,
             allowed_ratings: vec!["general".into()],
+            active_provider: "danbooru".into(),
+            accounts: BTreeMap::new(),
             gelbooru_user_id: None,
             api_min_interval_ms: 1000,
             download_concurrency: 1,
@@ -48,12 +57,26 @@ impl Settings {
         self.api_min_interval_ms = self.api_min_interval_ms.max(500);
         self.download_concurrency = self.download_concurrency.clamp(1, 3);
         self.thumb_cache_mb = self.thumb_cache_mb.clamp(50, 10_000);
-        self.allowed_ratings.retain(|r| !r.trim().is_empty());
+        self.allowed_ratings
+            .retain(|r| crate::providers::ALL_RATINGS.contains(&r.as_str()));
         self.allowed_ratings.dedup();
-        self.gelbooru_user_id = self
-            .gelbooru_user_id
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        if self.allowed_ratings.is_empty() {
+            self.allowed_ratings = vec!["general".into()];
+        }
+        if let Some(legacy) = self.gelbooru_user_id.take() {
+            let legacy = legacy.trim().to_string();
+            if !legacy.is_empty() {
+                self.accounts.entry("gelbooru".into()).or_insert(legacy);
+            }
+        }
+        self.accounts = std::mem::take(&mut self.accounts)
+            .into_iter()
+            .map(|(k, v)| (k, v.trim().to_string()))
+            .filter(|(k, v)| !v.is_empty() && crate::providers::provider_info(k).is_some())
+            .collect();
+        if crate::providers::provider_info(&self.active_provider).is_none() {
+            self.active_provider = "danbooru".into();
+        }
         self
     }
 }
@@ -99,7 +122,7 @@ mod tests {
         let path = dir.path().join("sub").join("settings.json");
         let s = Settings {
             age_confirmed: true,
-            gelbooru_user_id: Some("12345".into()),
+            accounts: [("gelbooru".to_string(), "12345".to_string())].into(),
             ..Default::default()
         };
         save(&path, &s).unwrap();
@@ -112,6 +135,24 @@ mod tests {
         assert_eq!(s.api_min_interval_ms, 500);
         assert_eq!(s.download_concurrency, 3);
         assert_eq!(s.thumb_cache_mb, 500);
+    }
+
+    #[test]
+    fn migrates_legacy_gelbooru_user_id_and_validates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{"age_confirmed":true,"gelbooru_user_id":" 1234567 ","active_provider":"bogus","allowed_ratings":["nope"],"accounts":{"zzz":"x"}}"#,
+        )
+        .unwrap();
+        let s = load(&path).unwrap();
+        assert_eq!(s.accounts.get("gelbooru").map(String::as_str), Some("1234567"));
+        assert!(!s.accounts.contains_key("zzz"));
+        assert_eq!(s.active_provider, "danbooru");
+        assert_eq!(s.allowed_ratings, vec!["general".to_string()]);
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(!text.contains("gelbooru_user_id"));
     }
 
     #[test]

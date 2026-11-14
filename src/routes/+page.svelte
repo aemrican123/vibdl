@@ -6,12 +6,17 @@
 
   type Tab = "browse" | "settings";
   let tab = $state<Tab>("settings");
-  let ready = $state(false); // age confirmed + credentials saved
+  let ready = $state(false); // age confirmed + active board usable
+  let provider = $state(""); // active board id
+  let providerName = $state("");
 
   async function refreshReady() {
     try {
-      const [s, c] = await Promise.all([api.getSettings(), api.credentialStatus()]);
-      ready = s.age_confirmed && c.has_user_id && c.has_api_key;
+      const s = await api.getSettings();
+      const [c, list] = await Promise.all([api.credentialStatus(s.active_provider), api.listProviders()]);
+      provider = s.active_provider;
+      providerName = list.find((p) => p.id === provider)?.name ?? provider;
+      ready = s.age_confirmed && c.ready;
     } catch {
       ready = false;
     }
@@ -28,7 +33,7 @@
     <span class="logo">VIBDL</span>
     <nav>
       <button class:active={tab === "browse"} disabled={!ready} onclick={() => (tab = "browse")}>
-        Browse
+        Browse{providerName ? ` · ${providerName}` : ""}
       </button>
       <button disabled title="Milestone 5">Library</button>
       <button class:active={tab === "settings"} onclick={() => (tab = "settings")}>Settings</button>
@@ -38,7 +43,8 @@
   <main>
     <!-- Keep Browse mounted while switching tabs so results and scroll survive. -->
     <div class="pane" class:hidden={tab !== "browse"}>
-      {#if ready}<Browse />{/if}
+      <!-- Switching boards starts a fresh browser. -->
+      {#if ready}{#key provider}<Browse />{/key}{/if}
     </div>
     {#if tab === "settings"}
       <div class="pane scroll"><Settings onchange={refreshReady} /></div>

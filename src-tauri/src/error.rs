@@ -13,6 +13,8 @@ pub enum AppError {
     Http(u16),
     #[error("Network error: {0}")]
     Network(String),
+    #[error("The imageboard rejected the request: {0}")]
+    Rejected(String),
     #[error("Unexpected response format: {0}")]
     Parse(String),
     #[error("No credentials saved for {0}. Add them in Settings.")]
