@@ -1,5 +1,5 @@
 // Typed wrappers around the Rust commands in src-tauri/src/commands.rs.
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export interface Settings {
   age_confirmed: boolean;
@@ -22,6 +22,32 @@ export interface ConnectionTest {
   sample_fields: string[];
 }
 
+export interface BrowsePost {
+  id: string;
+  md5: string | null;
+  rating: string | null;
+  width: number | null;
+  height: number | null;
+  preview_width: number | null;
+  preview_height: number | null;
+  file_ext: string | null;
+  thumb_key: string | null;
+  post_url: string;
+  tags: string[];
+}
+
+export interface BrowsePage {
+  posts: BrowsePost[];
+  page: number;
+  total: number | null;
+  has_more: boolean;
+  depth_limited: boolean;
+  hidden_by_rating: number;
+}
+
+/** URL the webview can load for a registered thumbnail key. */
+export const thumbUrl = (key: string) => convertFileSrc(key, "thumb");
+
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) => invoke<Settings>("save_settings", { settings }),
@@ -30,6 +56,7 @@ export const api = {
     invoke<CredentialStatus>("set_gelbooru_credentials", { userId, apiKey }),
   clearCredentials: () => invoke<void>("clear_gelbooru_credentials"),
   testConnection: () => invoke<ConnectionTest>("test_gelbooru_connection"),
+  browseSearch: (tags: string, page: number) => invoke<BrowsePage>("browse_search", { tags, page }),
 };
 
 /** Rust errors arrive as plain (already redacted) strings. */

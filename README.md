@@ -22,10 +22,13 @@ npm run check                   # Svelte/TS type check
 ```
 src/                    UI (SvelteKit, SPA mode)
   lib/api.ts            typed wrappers for Rust commands
+  lib/Browse.svelte     online gallery
+  lib/Settings.svelte   setup & settings
 src-tauri/src/
   commands.rs           Tauri IPC surface
   error.rs              redacted error type
   net/                  HTTP client, rate limiter, retry/backoff, secret redaction
+  browse/               gallery queries, rating filter, thumb:// protocol + disk cache
   providers/            ImageboardProvider trait + shared types
     gelbooru/           Gelbooru dapi client + tolerant parser + fixtures
   settings/             settings.json + OS keychain credentials
@@ -34,9 +37,9 @@ docs/PLAN.md            feasibility report & roadmap
 
 ## Status
 
+- [x] M0 — API fields/auth verified live; TOS reviewed (personal use)
 - [x] M1 — Skeleton, settings, keychain credentials, rate-limited client, Gelbooru provider
-- [ ] M0 — Verify API fields/auth/TOS against real Gelbooru responses (replace synthetic fixtures)
-- [ ] M2 — Online browser (thumbnail grid)
+- [x] M2 — Online browser (thumbnail grid, infinite scroll, thumbnail disk cache)
 - [ ] M3 — Post detail + categorized tags
 - [ ] M4 — Single download + SQLite + sidecars
 - [ ] M5 — Local library (MVP)

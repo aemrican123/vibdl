@@ -23,6 +23,17 @@ I could **not** open any gelbooru.com page from this research environment. The w
 
 ---
 
+## Milestone 0 results (2026-11-14)
+
+- **[LIVE]** Authenticated dapi post search works with `api_key` + `user_id` (test: `tags=rating:general`, `limit=1`). It reported 3,859,549 general-rated posts.
+- **[LIVE]** The post object has exactly these 29 fields: `change, created_at, creator_id, directory, file_url, has_children, has_comments, has_notes, height, id, image, md5, owner, parent_id, post_locked, preview_height, preview_url, preview_width, rating, sample, sample_height, sample_url, sample_width, score, source, status, tags, title, width`. This matches the [2ND] list in Part 3.
+- **[LIVE]** There is **no file-size field**. VIBDL records the size at download time.
+- **[LIVE]** The `rating:general` filter works, which confirms the 4-level vocabulary (general/sensitive/questionable/explicit).
+- **[USER-VERIFIED]** The owner reviewed `tos.php` and judged personal use acceptable. VIBDL is personal use only and won't be distributed.
+- Still [UNVERIFIED]: the behavior without a key, the tag endpoint's `type` values against a real response, the `created_at` format, and whether thumbnails need a Referer. These get checked as M2/M3 exercise them.
+
+---
+
 ## Part 1 — Feasibility verdict
 
 **Technically feasible:** yes, with high confidence. Gelbooru exposes a JSON/XML "dapi" that third-party clients have used for years. Through it you can search posts by tags, get preview, sample and original-file URLs, and look up tag categories. [2ND]

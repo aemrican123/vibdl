@@ -49,13 +49,19 @@ pub struct ApiClient {
     max_retries: u32,
 }
 
+/// Plain HTTP client with VIBDL's User-Agent and sane timeouts (used for
+/// static files like thumbnails; API calls go through `ApiClient`).
+pub fn build_http() -> AppResult<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()?)
+}
+
 impl ApiClient {
     pub fn new(min_interval: Duration) -> AppResult<Self> {
-        let http = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .build()?;
+        let http = build_http()?;
         Ok(Self {
             http,
             limiter: RateLimiter::new(min_interval),

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tauri::State;
 
+use crate::browse::{self, BrowsePage, thumbs::Thumbs};
 use crate::error::{AppError, AppResult};
 use crate::net::ApiClient;
 use crate::providers::gelbooru::{self, Credentials, GelbooruProvider};
@@ -16,6 +17,7 @@ pub struct AppState {
     pub settings_path: PathBuf,
     pub settings: Mutex<Settings>,
     pub api: Arc<ApiClient>,
+    pub thumbs: Arc<Thumbs>,
 }
 
 impl AppState {
@@ -118,4 +120,24 @@ pub async fn test_gelbooru_connection(state: State<'_, AppState>) -> AppResult<C
         sample_post_id: first.map(|p| p.remote_id.clone()),
         sample_fields: fields,
     })
+}
+
+/// One page of Gelbooru results for the online browser. Ratings the user
+/// hasn't allowed are excluded in the query and filtered again here.
+#[tauri::command]
+pub async fn browse_search(
+    state: State<'_, AppState>,
+    tags: String,
+    page: u32,
+) -> AppResult<BrowsePage> {
+    let settings = state.snapshot();
+    if !settings.age_confirmed {
+        return Err(AppError::Settings("Confirm your age in Settings first.".into()));
+    }
+    let provider = state.gelbooru()?;
+    let query = browse::build_query(&tags, &settings.allowed_ratings);
+    let result = provider
+        .search(&SearchQuery { tags: query, page, limit: browse::PAGE_SIZE })
+        .await?;
+    Ok(browse::to_browse_page(result, &settings.allowed_ratings, &state.thumbs))
 }
