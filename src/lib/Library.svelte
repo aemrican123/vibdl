@@ -408,6 +408,14 @@
         }}
       >
         <label>Copy {plural(picked.size, "item")} to <input bind:value={exportDest} placeholder="D:\Exports\VIBDL" spellcheck="false" /></label>
+        <button
+          type="button"
+          class="ghost"
+          onclick={async () => {
+            const p = await api.pickFolder("Copy selected items to…", exportDest);
+            if (p) exportDest = p;
+          }}>Browse…</button
+        >
         <label>named <input bind:value={exportPattern} spellcheck="false" title="Tokens: {'{artist} {character} {copyright} {board} {id} {md5} {rating}'}" /></label>
         <button type="submit" disabled={busy || !exportDest.trim()}>{busy ? "Copying…" : "Copy"}</button>
         <button type="button" class="ghost" onclick={() => (bulk = "none")}>Cancel</button>

@@ -659,6 +659,21 @@ fn to_pairs(items: Vec<ItemKey>) -> Vec<(String, String)> {
     items.into_iter().map(|k| (k.provider, k.remote_id)).collect()
 }
 
+/// Native "choose folder" dialog. `None` if the user cancels.
+#[tauri::command]
+pub async fn pick_folder(app: AppHandle, title: String, start: Option<String>) -> AppResult<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+    let mut dlg = app.dialog().file().set_title(title);
+    if let Some(dir) = start.map(std::path::PathBuf::from).filter(|p| p.is_dir()) {
+        dlg = dlg.set_directory(dir);
+    }
+    // Blocking is fine here: async commands run off the main thread.
+    let picked = tauri::async_runtime::spawn_blocking(move || dlg.blocking_pick_folder())
+        .await
+        .map_err(|e| AppError::Settings(format!("folder dialog failed: {e}")))?;
+    Ok(picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string()))
+}
+
 /// Every item matching the Library filter (for "select all").
 #[tauri::command]
 pub fn library_keys(state: State<'_, AppState>, q: String) -> AppResult<Vec<(String, String)>> {

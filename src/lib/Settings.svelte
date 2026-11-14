@@ -240,7 +240,17 @@
           <strong>{lib.post_count.toLocaleString()}</strong> item{lib.post_count === 1 ? "" : "s"} in the library{lib.is_default ? " (default folder)" : ""}.
         </p>
       {/if}
-      <label>Folder <input bind:value={libPath} spellcheck="false" autocomplete="off" /></label>
+      <div class="pickrow">
+        <label>Folder <input bind:value={libPath} spellcheck="false" autocomplete="off" /></label>
+        <button
+          class="ghost"
+          disabled={busy}
+          onclick={async () => {
+            const p = await api.pickFolder("Choose the VIBDL library folder", libPath);
+            if (p) libPath = p;
+          }}>Browse…</button
+        >
+      </div>
       <div class="row">
         <button disabled={busy || !libPath.trim() || libPath.trim() === lib?.root} onclick={() => saveLibraryDir(false)}>Use this folder</button>
         <button class="ghost" disabled={busy || lib?.is_default} onclick={() => saveLibraryDir(true)}>Use default</button>
@@ -318,5 +328,8 @@
   code { font-size: 0.8rem; word-break: break-word; color: #b8bdf5; }
   strong.ok, p.ok { color: #6fd39a; }
   p.err { color: #f07b7b; }
+  .pickrow { display: flex; gap: 8px; align-items: flex-end; }
+  .pickrow label { flex: 1; }
+  .pickrow button { margin-bottom: 10px; }
   .err-line { color: #f07b7b; font-size: 0.8rem; margin-top: 4px; }
 </style>

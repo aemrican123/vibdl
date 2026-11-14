@@ -50,6 +50,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         // UI loads thumbnails and sample previews as thumb://localhost/<key> (http://thumb.localhost/<key>
         // on Windows); the key must have been registered from an API response.
         .register_asynchronous_uri_scheme_protocol("thumb", |ctx, request, responder| {
@@ -195,6 +196,7 @@ pub fn run() {
             commands::library_remove_missing,
             commands::library_export,
             commands::library_keys,
+            commands::pick_folder,
             commands::library_delete_many,
             commands::library_export_selected,
             commands::library_refresh_many,

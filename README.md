@@ -17,6 +17,24 @@ cd src-tauri; cargo test        # Rust unit tests
 npm run check                   # Svelte/TS type check
 ```
 
+## Install as a normal app (Windows)
+
+```powershell
+npm run tauri build
+```
+
+This produces `src-tauri\target\release\bundle\nsis\VIBDL_<version>_x64-setup.exe`. Run it. It installs for your user only (no admin) and adds VIBDL to the Start menu. The installed app shares settings, library and queue with `npm run tauri dev`.
+
+Desktop shortcut (run once after installing):
+
+```powershell
+$exe = Get-ChildItem "$env:LOCALAPPDATA\VIBDL" -Filter *.exe | Where-Object { $_.Name -notmatch '^uninstall' } | Select-Object -First 1
+$lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'VIBDL.lnk'))
+$lnk.TargetPath = $exe.FullName; $lnk.WorkingDirectory = $exe.DirectoryName; $lnk.IconLocation = $exe.FullName; $lnk.Save()
+```
+
+App icon source: `src-tauri/app-icon.png` (regenerate sizes with `npm run tauri icon src-tauri/app-icon.png`).
+
 ## Layout
 
 ```
@@ -58,7 +76,7 @@ docs/PLAN.md            feasibility report & roadmap
 
 ## Keyboard shortcuts
 
-`/` focus search · `↑`/`↓` + `Tab`/`Enter` pick a tag suggestion · `Esc` close panel / leave select mode · `←`/`→` previous/next item while a panel is open · Ctrl/Shift+click multi-select (Browse)
+`/` focus search · `Enter` or double-click open the full-screen viewer (there: `←`/`→` navigate, wheel zoom, drag pan, double-click or `F` fit / `1` 100 %, `+`/`-` zoom, `Esc` close) · `↑`/`↓` + `Tab`/`Enter` pick a tag suggestion · `Esc` close panel / leave select mode · `←`/`→` previous/next item while a panel is open · Ctrl/Shift+click multi-select (Browse)
 
 ## Library filter syntax
 

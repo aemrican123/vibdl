@@ -309,6 +309,9 @@ export const api = {
     invoke<ExportReport>("library_export_selected", { items, dest, pattern }),
   libraryRefreshMany: (items: { provider: string; remote_id: string }[]) =>
     invoke<BulkReport>("library_refresh_many", { items }),
+  /** Native folder dialog; null if cancelled. */
+  pickFolder: (title: string, start?: string | null) =>
+    invoke<string | null>("pick_folder", { title, start: start || null }),
   browseSearch: (tags: string, page: number) => invoke<BrowsePage>("browse_search", { tags, page }),
 };
 

@@ -121,7 +121,16 @@
       Copies the <strong>{total.toLocaleString()}</strong> item{total === 1 ? "" : "s"} matching your current filter
       {query ? `(“${query}”)` : "(whole library)"} to a folder. Originals are copied unchanged; nothing is overwritten.
     </p>
-    <label>Destination folder <input bind:value={dest} placeholder="e.g. D:\Exports\VIBDL" spellcheck="false" /></label>
+    <div class="pickrow">
+      <label>Destination folder <input bind:value={dest} placeholder="e.g. D:\Exports\VIBDL" spellcheck="false" /></label>
+      <button
+        class="ghost"
+        onclick={async () => {
+          const p = await api.pickFolder("Export to folder", dest);
+          if (p) dest = p;
+        }}>Browse…</button
+      >
+    </div>
     <label>
       Name pattern <input bind:value={pattern} spellcheck="false" />
       <span class="hint small">Tokens: {"{artist} {character} {copyright} {board} {id} {md5} {rating}"}</span>
@@ -211,6 +220,9 @@
     background: #15161a; color: inherit; border: 1px solid #353640; border-radius: 6px; font: inherit;
   }
   .ok { color: #6fd39a; font-size: 0.88rem; }
+  .pickrow { display: flex; gap: 8px; align-items: flex-end; }
+  .pickrow label { flex: 1; }
+  .pickrow button { margin-bottom: 12px; }
   .err { color: #f07b7b; font-size: 0.88rem; }
   .group { border-top: 1px solid #2c2d35; padding: 10px 0; }
   .gtitle { font-size: 0.8rem; color: #b5b6bf; margin-bottom: 6px; }
