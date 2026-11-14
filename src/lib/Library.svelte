@@ -3,6 +3,8 @@
   import LibraryTools from "$lib/LibraryTools.svelte";
   import LocalPanel from "$lib/LocalPanel.svelte";
   import TagInput from "$lib/TagInput.svelte";
+  import VirtualGrid from "$lib/VirtualGrid.svelte";
+  import { isTyping, loadPref, savePref } from "$lib/prefs";
   import {
     api,
     errorText,
@@ -12,16 +14,19 @@
     type LibrarySort,
   } from "$lib/api";
 
-  let query = $state("");
+  let { active = true }: { active?: boolean } = $props();
+
+  let query = $state(loadPref("library.query", ""));
   let activeQuery = $state("");
-  let sort = $state<LibrarySort>("newest");
+  let sort = $state<LibrarySort>(loadPref<LibrarySort>("library.sort", "newest"));
+  let grid = $state<{ reveal: (i: number) => void; toTop: () => void } | null>(null);
+  let searchBox = $state<{ focus: () => void } | null>(null);
   let items = $state<LibraryItem[]>([]);
   let total = $state(0);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let facets = $state<Facets | null>(null);
   let selected = $state<LibraryItem | null>(null);
-  let sentinel = $state<HTMLDivElement | null>(null);
   let failed = $state<Set<string>>(new Set());
   let generation = 0;
   let view = $state<"gallery" | "tools">("gallery");
@@ -48,6 +53,9 @@
     error = null;
     selected = null;
     failed = new Set();
+    savePref("library.query", activeQuery);
+    savePref("library.sort", sort);
+    grid?.toTop();
     loadMore(true);
     const gen = generation;
     api
@@ -64,7 +72,7 @@
       const r = await api.librarySearch(activeQuery, sort, items.length);
       if (gen !== generation) return;
       items = [...items, ...r.items];
-      total = r.total;
+      if (r.total !== null) total = r.total;
     } catch (err) {
       if (gen === generation) error = errorText(err);
     } finally {
@@ -72,14 +80,6 @@
     }
   }
 
-  $effect(() => {
-    if (!sentinel) return;
-    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && loadMore(), {
-      rootMargin: "800px",
-    });
-    io.observe(sentinel);
-    return () => io.disconnect();
-  });
 
   /** Add a filter term (or replace the search with it). */
   function filterBy(term: string, add = true) {
@@ -91,6 +91,25 @@
   function removeTerm(term: string) {
     query = query.trim().split(/\s+/).filter((p) => p && p !== term).join(" ");
     search();
+  }
+
+  // Keyboard: "/" filter · Esc close · ←/→ previous/next item.
+  function onKey(e: KeyboardEvent) {
+    if (!active || view !== "gallery" || isTyping(e)) return;
+    if (e.key === "/") {
+      e.preventDefault();
+      searchBox?.focus();
+    } else if (e.key === "Escape" && selected) {
+      selected = null;
+    } else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && selected) {
+      e.preventDefault();
+      const i = items.findIndex((x) => x.provider === selected!.provider && x.remote_id === selected!.remote_id);
+      const j = e.key === "ArrowRight" ? i + 1 : i - 1;
+      if (j >= 0 && j < items.length) {
+        selected = items[j];
+        grid?.reveal(j);
+      }
+    }
   }
 
   const terms = $derived(activeQuery.split(/\s+/).filter(Boolean));
@@ -119,9 +138,12 @@
   let expanded = $state<Record<string, boolean>>({});
 </script>
 
+<svelte:window onkeydown={onKey} />
+
 <div class="lib">
   <form class="bar" onsubmit={search}>
     <TagInput
+      bind:this={searchBox}
       bind:value={query}
       placeholder="Filter: long_hair -monochrome artist:name char:name copy:series rating:g type:png board:danbooru"
       fetch={(w) => api.librarySuggest(w)}
@@ -183,38 +205,39 @@
       {/if}
     </aside>
 
-    <div class="grid-wrap">
-      {#if !loading && total === 0 && !error}
-        <p class="note">
-          {activeQuery ? "Nothing matches these filters." : "Your library is empty. Download originals from the Browse tab."}
-        </p>
-      {/if}
-      <div class="grid">
-        {#each items as it (it.provider + it.remote_id)}
-          <button
-            class="tile"
-            class:sel={selected?.provider === it.provider && selected?.remote_id === it.remote_id}
-            onclick={() => (selected = it)}
-            title={`${it.provider} #${it.remote_id} · ${it.width ?? "?"}×${it.height ?? "?"}`}
-          >
-            {#if !failed.has(it.md5)}
-              <img
-                src={libraryThumbUrl(it)}
-                alt={`${it.provider} ${it.remote_id}`}
-                loading="lazy"
-                decoding="async"
-                onerror={() => (failed = new Set(failed).add(it.md5))}
-              />
-            {:else}
-              <span class="nothumb">{it.file_ext.toUpperCase()}</span>
-            {/if}
-            <span class="badge">{it.file_ext}</span>
-          </button>
-        {/each}
-      </div>
-      <div bind:this={sentinel} class="sentinel"></div>
-      {#if error}<p class="err">{error}</p>{/if}
-    </div>
+    <VirtualGrid bind:this={grid} items={items} key={(it) => it.provider + it.remote_id} onend={() => loadMore()}>
+      {#snippet before()}
+        {#if !loading && total === 0 && !error}
+          <p class="note">
+            {activeQuery ? "Nothing matches these filters." : "Your library is empty. Download originals from the Browse tab."}
+          </p>
+        {/if}
+      {/snippet}
+      {#snippet tile(it)}
+        <button
+          class="tile"
+          class:sel={selected?.provider === it.provider && selected?.remote_id === it.remote_id}
+          onclick={() => (selected = it)}
+          title={`${it.provider} #${it.remote_id} · ${it.width ?? "?"}×${it.height ?? "?"}`}
+        >
+          {#if !failed.has(it.md5)}
+            <img
+              src={libraryThumbUrl(it)}
+              alt={`${it.provider} ${it.remote_id}`}
+              decoding="async"
+              onerror={() => (failed = new Set(failed).add(it.md5))}
+            />
+          {:else}
+            <span class="nothumb">{it.file_ext.toUpperCase()}</span>
+          {/if}
+          <span class="badge">{it.file_ext}</span>
+          <span class="board">{it.provider}</span>
+        </button>
+      {/snippet}
+      {#snippet after()}
+        {#if error}<p class="err">{error}</p>{/if}
+      {/snippet}
+    </VirtualGrid>
 
     {#if selected}
       <LocalPanel item={selected} onclose={() => (selected = null)} onfilter={filterBy} ondeleted={removed} />
@@ -261,13 +284,10 @@
     padding: 2px 6px; cursor: pointer;
   }
   .n { color: #7d7e87; flex-shrink: 0; }
-  .grid-wrap { flex: 1; overflow-y: auto; padding: 0 16px 24px 8px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
   .tile {
-    position: relative; aspect-ratio: 1; padding: 0; border-radius: 6px; overflow: hidden;
+    position: relative; width: 100%; height: 100%; padding: 0; border-radius: 6px; overflow: hidden;
     background: #1f2026; border: 2px solid transparent; cursor: pointer; color: inherit;
     display: flex; align-items: center; justify-content: center;
-    content-visibility: auto; contain-intrinsic-size: 150px 150px;
   }
   .tile:hover { border-color: #3a3b46; }
   .tile.sel { border-color: #4b5bd6; }
@@ -277,7 +297,10 @@
     position: absolute; right: 4px; bottom: 4px; padding: 1px 5px; border-radius: 4px;
     background: rgba(0, 0, 0, 0.65); color: #ddd; font-size: 0.7rem; text-transform: uppercase;
   }
-  .sentinel { height: 1px; }
+  .board {
+    position: absolute; left: 4px; bottom: 4px; padding: 1px 5px; border-radius: 4px;
+    background: rgba(0, 0, 0, 0.55); color: #bbb; font-size: 0.65rem; text-transform: capitalize;
+  }
   .note { color: #9a9ba3; text-align: center; margin: 40px 0; }
   .err { color: #f07b7b; text-align: center; }
   .dim { color: #7d7e87; }

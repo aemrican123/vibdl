@@ -1,15 +1,21 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import PostPanel from "$lib/PostPanel.svelte";
   import TagInput from "$lib/TagInput.svelte";
+  import VirtualGrid from "$lib/VirtualGrid.svelte";
+  import { isTyping, loadPref, savePref } from "$lib/prefs";
   import { api, errorText, thumbUrl, type BrowsePost, type Job } from "$lib/api";
 
   let {
     provider,
     providerName = "",
     allowsBatch = false,
-  }: { provider: string; providerName?: string; allowsBatch?: boolean } = $props();
+    active = true,
+  }: { provider: string; providerName?: string; allowsBatch?: boolean; active?: boolean } = $props();
+
+  let grid = $state<{ reveal: (i: number) => void; toTop: () => void } | null>(null);
+  let searchBox = $state<{ focus: () => void } | null>(null);
 
   let query = $state("");
   let activeQuery = $state<string | null>(null);
@@ -24,7 +30,6 @@
   // Per-post thumbnail retry count; > MAX_THUMB_RETRIES = give up.
   let thumbRetries = $state<Record<string, number>>({});
   const MAX_THUMB_RETRIES = 2;
-  let sentinel = $state<HTMLDivElement | null>(null);
 
   // Multi-select for the download queue.
   let selectMode = $state(false);
@@ -52,7 +57,41 @@
     thumbRetries = {};
     picked = new Set();
     lastPicked = null;
+    savePref(`browse.query.${provider}`, activeQuery);
+    grid?.toTop();
     loadMore();
+  }
+
+  // Re-run the last search for this board.
+  onMount(() => {
+    const last = loadPref<string | null>(`browse.query.${provider}`, null);
+    if (last !== null) {
+      query = last;
+      search();
+    }
+  });
+
+  // Keyboard: "/" search · Esc close/exit · ←/→ previous/next post.
+  function onKey(e: KeyboardEvent) {
+    if (!active || isTyping(e)) return;
+    if (e.key === "/") {
+      e.preventDefault();
+      searchBox?.focus();
+    } else if (e.key === "Escape") {
+      if (selected) selected = null;
+      else if (selectMode) {
+        selectMode = false;
+        clearPicked();
+      }
+    } else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && selected) {
+      e.preventDefault();
+      const i = posts.findIndex((p) => p.id === selected!.id);
+      const j = e.key === "ArrowRight" ? i + 1 : i - 1;
+      if (j >= 0 && j < posts.length) {
+        selected = posts[j];
+        grid?.reveal(j);
+      }
+    }
   }
 
   async function loadMore() {
@@ -99,19 +138,6 @@
     if (done.some((id) => !have.has(id))) have = new Set([...have, ...done]);
   }).then((u) => (unlisten = u));
   onDestroy(() => unlisten?.());
-
-  // Load the next page when the bottom sentinel scrolls near the viewport.
-  $effect(() => {
-    if (!sentinel) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) loadMore();
-      },
-      { rootMargin: "800px" },
-    );
-    io.observe(sentinel);
-    return () => io.disconnect();
-  });
 
   // From the detail panel: click = search that tag, shift+click = add it.
   function searchTag(tag: string, add: boolean) {
@@ -188,9 +214,12 @@
   const fmtRes = (p: BrowsePost) => (p.width && p.height ? `${p.width}×${p.height}` : "?");
 </script>
 
+<svelte:window onkeydown={onKey} />
+
 <div class="browse">
   <form class="searchbar" onsubmit={search}>
     <TagInput
+      bind:this={searchBox}
       bind:value={query}
       placeholder="Search tags, e.g. long_hair blue_eyes (Danbooru: max 2 tags without Gold)"
       fetch={(w) => api.suggestTags(w)}
@@ -238,49 +267,40 @@
   {/if}
 
   <div class="body">
-    <div class="grid-wrap">
-      <div class="grid">
-        {#each posts as p, i (p.id)}
-          <button
-            class="tile"
-            class:sel={selected?.id === p.id}
-            class:picked={picked.has(p.id)}
-            onclick={(e) => onTile(e, p, i)}
-            title={`#${p.id} · ${fmtRes(p)}`}
-          >
-            {#if p.thumb_key && (thumbRetries[p.id] ?? 0) <= MAX_THUMB_RETRIES}
-              <img
-                src={thumbSrc(p.thumb_key, p.id)}
-                alt={`Post ${p.id}`}
-                loading="lazy"
-                decoding="async"
-                onerror={() => thumbFailed(p.id)}
-              />
-            {:else}
-              <span class="nothumb">no preview</span>
-            {/if}
-            {#if p.file_ext}<span class="badge">{p.file_ext}</span>{/if}
-            {#if have.has(p.id)}
-              <span class="mark have" title="In your library">✓</span>
-            {:else if queued.has(p.id)}
-              <span class="mark queued" title="Queued">⇣</span>
-            {:else if picked.has(p.id)}
-              <span class="mark pick">●</span>
-            {/if}
-          </button>
-        {/each}
-      </div>
-
-      <div bind:this={sentinel} class="sentinel"></div>
-
-      {#if error}
-        <p class="err">{error} <button class="ghost" onclick={() => { error = null; hasMore = true; loadMore(); }}>Retry</button></p>
-      {:else if depthLimited}
-        <p class="note">Reached this board's search depth limit. Add tags to narrow the search.</p>
-      {:else if activeQuery !== null && !hasMore && !loading}
-        <p class="note">{posts.length ? "End of results." : "No results."}</p>
-      {/if}
-    </div>
+    <VirtualGrid bind:this={grid} items={posts} key={(p) => p.id} onend={loadMore}>
+      {#snippet tile(p, i)}
+        <button
+          class="tile"
+          class:sel={selected?.id === p.id}
+          class:picked={picked.has(p.id)}
+          onclick={(e) => onTile(e, p, i)}
+          title={`#${p.id} · ${fmtRes(p)}`}
+        >
+          {#if p.thumb_key && (thumbRetries[p.id] ?? 0) <= MAX_THUMB_RETRIES}
+            <img src={thumbSrc(p.thumb_key, p.id)} alt={`Post ${p.id}`} decoding="async" onerror={() => thumbFailed(p.id)} />
+          {:else}
+            <span class="nothumb">no preview</span>
+          {/if}
+          {#if p.file_ext}<span class="badge">{p.file_ext}</span>{/if}
+          {#if have.has(p.id)}
+            <span class="mark have" title="In your library">✓</span>
+          {:else if queued.has(p.id)}
+            <span class="mark queued" title="Queued">⇣</span>
+          {:else if picked.has(p.id)}
+            <span class="mark pick">●</span>
+          {/if}
+        </button>
+      {/snippet}
+      {#snippet after()}
+        {#if error}
+          <p class="err">{error} <button class="ghost" onclick={() => { error = null; hasMore = true; loadMore(); }}>Retry</button></p>
+        {:else if depthLimited}
+          <p class="note">Reached this board's search depth limit. Add tags to narrow the search.</p>
+        {:else if activeQuery !== null && !hasMore && !loading}
+          <p class="note">{posts.length ? "End of results." : "No results."}</p>
+        {/if}
+      {/snippet}
+    </VirtualGrid>
 
     {#if selected}
       <PostPanel post={selected} onclose={() => (selected = null)} ontag={searchTag} />
@@ -301,13 +321,10 @@
   .qmsg.err { color: #f07b7b; }
   .dim { color: #7d7e87; font-size: 0.8rem; }
   .body { flex: 1; display: flex; min-height: 0; }
-  .grid-wrap { flex: 1; overflow-y: auto; padding: 0 16px 24px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
   .tile {
-    position: relative; aspect-ratio: 1; padding: 0; border-radius: 6px; overflow: hidden;
+    position: relative; width: 100%; height: 100%; padding: 0; border-radius: 6px; overflow: hidden;
     background: #1f2026; border: 2px solid transparent; cursor: pointer; color: inherit;
     display: flex; align-items: center; justify-content: center;
-    content-visibility: auto; contain-intrinsic-size: 150px 150px;
   }
   .tile:hover { border-color: #3a3b46; }
   .tile.sel { border-color: #4b5bd6; }
@@ -326,7 +343,6 @@
   .mark.have { background: #1d6b40; color: #fff; }
   .mark.queued { background: #6b5a1d; color: #fff; }
   .mark.pick { background: #4b5bd6; color: #fff; }
-  .sentinel { height: 1px; }
   .note, .err { text-align: center; color: #9a9ba3; margin: 18px 0; }
   .err { color: #f07b7b; }
   button {

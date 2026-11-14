@@ -56,6 +56,10 @@ docs/PLAN.md            feasibility report & roadmap
 - [x] M6 — Download queue: multi-select in Browse, downloaded badges, Downloads tab (sequential, retry, cancel). Enabled per board (Danbooru only; Gelbooru never)
 - [x] M5 — Offline Library tab: filters (tags, artist/char/copy, rating, board, type), facets, sort, local thumbnails — **MVP complete**
 
+## Keyboard shortcuts
+
+`/` focus search · `↑`/`↓` + `Tab`/`Enter` pick a tag suggestion · `Esc` close panel / leave select mode · `←`/`→` previous/next item while a panel is open · Ctrl/Shift+click multi-select (Browse)
+
 ## Library filter syntax
 
 `long_hair` has tag · `-monochrome` lacks tag · `artist:name` / `char:name` / `copy:name` / `meta:name` tag in a category · `rating:g,s` · `board:danbooru` · `type:png`. All terms are combined with AND. Your Settings rating filter always applies.

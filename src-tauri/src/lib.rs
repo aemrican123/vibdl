@@ -61,7 +61,8 @@ pub fn run() {
                     Ok(Some((bytes, mime))) => Response::builder()
                         .status(200)
                         .header(header::CONTENT_TYPE, mime)
-                        .header(header::CACHE_CONTROL, "max-age=86400")
+                        // Keys are content hashes, so the bytes never change.
+                        .header(header::CACHE_CONTROL, "max-age=604800, immutable")
                         .body(bytes)
                         .unwrap_or_else(|_| empty(500)),
                     Ok(None) => empty(404),
@@ -84,7 +85,7 @@ pub fn run() {
                     Ok(Some((bytes, mime))) => Response::builder()
                         .status(200)
                         .header(header::CONTENT_TYPE, mime)
-                        .header(header::CACHE_CONTROL, "max-age=3600")
+                        .header(header::CACHE_CONTROL, "max-age=604800, immutable")
                         .body(bytes)
                         .unwrap_or_else(|_| empty(500)),
                     Ok(None) => empty(404),

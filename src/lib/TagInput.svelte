@@ -22,6 +22,12 @@
     onsubmit: () => void;
   } = $props();
 
+  /** Focus the box (keyboard shortcut "/"). */
+  export function focus() {
+    input?.focus();
+    input?.select();
+  }
+
   function defaultSplit(token: string): [string, string] {
     const m = token.match(/^[-~]*/);
     const lead = m ? m[0] : "";

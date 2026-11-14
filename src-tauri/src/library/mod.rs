@@ -189,7 +189,8 @@ fn row_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
     pub items: Vec<LibraryItem>,
-    pub total: u64,
+    /// Counted for the first page only (offset 0); later pages reuse it.
+    pub total: Option<u64>,
     pub offset: u32,
 }
 
@@ -197,11 +198,15 @@ pub fn search(db: &Db, q: &str, sort: Sort, offset: u32, allowed: &[String]) -> 
     let terms = parse(q);
     let (cond, params) = where_clause(&terms, allowed);
     db.with_conn(|conn| {
-        let total: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM posts p WHERE {cond}"),
-            params_from_iter(params.iter()),
-            |r| r.get(0),
-        )?;
+        let total: Option<i64> = if offset == 0 {
+            Some(conn.query_row(
+                &format!("SELECT COUNT(*) FROM posts p WHERE {cond}"),
+                params_from_iter(params.iter()),
+                |r| r.get(0),
+            )?)
+        } else {
+            None
+        };
         let mut stmt = conn.prepare(&format!(
             "SELECT {ITEM_COLS} FROM posts p WHERE {cond} ORDER BY {} LIMIT {PAGE_SIZE} OFFSET {offset}",
             sort.sql()
@@ -209,7 +214,7 @@ pub fn search(db: &Db, q: &str, sort: Sort, offset: u32, allowed: &[String]) -> 
         let items = stmt
             .query_map(params_from_iter(params.iter()), row_item)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(SearchResult { items, total: total as u64, offset })
+        Ok(SearchResult { items, total: total.map(|t| t as u64), offset })
     })
 }
 
@@ -447,7 +452,7 @@ mod tests {
     fn filters_combine_and_respect_categories() {
         let db = seeded();
         let r = search(&db, "", Sort::Newest, 0, &all()).unwrap();
-        assert_eq!((ids(&r), r.total), (vec!["3", "2", "1"], 3));
+        assert_eq!((ids(&r), r.total), (vec!["3", "2", "1"], Some(3)));
 
         // artist:artist_a only matches the artist tag, not the general tag on #3.
         assert_eq!(ids(&search(&db, "artist:artist_a", Sort::Newest, 0, &all()).unwrap()), vec!["1"]);
@@ -465,8 +470,9 @@ mod tests {
         let db = seeded();
         let general_only = vec!["general".to_string()];
         let r = search(&db, "rating:e", Sort::Newest, 0, &general_only).unwrap();
-        assert_eq!(r.total, 0, "explicit hidden even when asked for");
-        assert_eq!(search(&db, "", Sort::Newest, 0, &general_only).unwrap().total, 2);
+        assert_eq!(r.total, Some(0), "explicit hidden even when asked for");
+        assert_eq!(search(&db, "", Sort::Newest, 0, &general_only).unwrap().total, Some(2));
+        assert_eq!(search(&db, "", Sort::Newest, 1, &general_only).unwrap().total, None, "no recount when paging");
     }
 
     #[test]

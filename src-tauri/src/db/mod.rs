@@ -11,7 +11,7 @@ use crate::error::{AppError, AppResult};
 use crate::providers::TagCategory;
 use crate::storage::Sidecar;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE posts (
@@ -58,6 +58,12 @@ CREATE TABLE phash (
 );
 ";
 
+/// v3: indexes for tag-name lookups (filters, suggestions) and ratings.
+const SCHEMA_V3: &str = "
+CREATE INDEX IF NOT EXISTS tags_by_name ON tags (name, category);
+CREATE INDEX IF NOT EXISTS posts_rating ON posts (rating);
+";
+
 fn db_err(e: rusqlite::Error) -> AppError {
     AppError::Settings(format!("library database: {e}"))
 }
@@ -102,21 +108,23 @@ impl Db {
     }
 
     fn init(conn: Connection) -> AppResult<Self> {
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")
-            .map_err(db_err)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;
+             PRAGMA cache_size = -16000; PRAGMA temp_store = MEMORY; PRAGMA mmap_size = 67108864;",
+        )
+        .map_err(db_err)?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(db_err)?;
-        if version == 0 {
-            conn.execute_batch(&format!(
-                "BEGIN; {SCHEMA_V1} {SCHEMA_V2} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
-            ))
-            .map_err(db_err)?;
-        } else if version == 1 {
-            conn.execute_batch(&format!("BEGIN; {SCHEMA_V2} PRAGMA user_version = 2; COMMIT;"))
-                .map_err(db_err)?;
-        } else if version > SCHEMA_VERSION {
+        if version > SCHEMA_VERSION {
             return Err(AppError::Settings(
                 "library database was created by a newer VIBDL version".into(),
             ));
+        }
+        // Apply each missing migration in order.
+        for (v, sql) in [(1, SCHEMA_V1), (2, SCHEMA_V2), (3, SCHEMA_V3)] {
+            if version < v {
+                conn.execute_batch(&format!("BEGIN; {sql} PRAGMA user_version = {v}; COMMIT;"))
+                    .map_err(db_err)?;
+            }
         }
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -361,7 +369,13 @@ pub mod tests {
         db.upsert(&sidecar("danbooru", "1", MD5), "a").unwrap();
         db.set_phash("danbooru", "1", 7).unwrap();
         let v: i64 = db.with_conn(|c| c.query_row("PRAGMA user_version", [], |r| r.get(0))).unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, SCHEMA_VERSION);
+        let idx: i64 = db
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='tags_by_name'", [], |r| r.get(0))
+            })
+            .unwrap();
+        assert_eq!(idx, 1);
     }
 
     #[test]

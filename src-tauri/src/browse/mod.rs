@@ -14,7 +14,7 @@ use crate::metadata::CategorizedTags;
 use crate::providers::{Page, RemotePost};
 use thumbs::Thumbs;
 
-const MAX_CACHED_POSTS: usize = 5_000;
+const MAX_CACHED_POSTS: usize = 3_000;
 /// Without a sample, show the original as the preview only if it's this small.
 const MAX_ORIGINAL_AS_PREVIEW_PX: u32 = 1500;
 

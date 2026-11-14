@@ -70,10 +70,10 @@
     <!-- Keep Browse mounted while switching tabs so results and scroll survive. -->
     <div class="pane" class:hidden={tab !== "browse"}>
       <!-- Switching boards starts a fresh browser. -->
-      {#if ready}{#key provider}<Browse {provider} {providerName} {allowsBatch} />{/key}{/if}
+      {#if ready}{#key provider}<Browse {provider} {providerName} {allowsBatch} active={tab === "browse"} />{/key}{/if}
     </div>
     <div class="pane" class:hidden={tab !== "library"}>
-      {#if ageOk}<Library bind:this={libraryView} />{/if}
+      {#if ageOk}<Library bind:this={libraryView} active={tab === "library"} />{/if}
     </div>
     <div class="pane scroll" class:hidden={tab !== "downloads"}>
       {#if ageOk}<Downloads />{/if}
