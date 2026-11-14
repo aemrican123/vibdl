@@ -1,6 +1,17 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { api, errorText, thumbUrl, type BrowsePost, type CategorizedTags, type PostDetails } from "$lib/api";
+  import {
+    api,
+    errorText,
+    thumbUrl,
+    type BrowsePost,
+    type CategorizedTags,
+    type DownloadProgress,
+    type LocalEntry,
+    type PostDetails,
+  } from "$lib/api";
 
   let {
     post,
@@ -14,6 +25,49 @@
   let sampleFailed = $state(false);
   let sampleLoaded = $state(false);
   let showFields = $state(false);
+  let local = $state<LocalEntry | null>(null);
+  let downloading = $state(false);
+  let progress = $state<{ bytes: number; total: number | null } | null>(null);
+  let dlMessage = $state<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  // Progress events from the Rust downloader.
+  let unlisten: UnlistenFn | null = null;
+  listen<DownloadProgress>("download-progress", (e) => {
+    if (e.payload.id === post.id && e.payload.provider === post.provider) {
+      progress = { bytes: e.payload.bytes, total: e.payload.total };
+    }
+  }).then((u) => (unlisten = u));
+  onDestroy(() => unlisten?.());
+
+  async function download() {
+    const target = post;
+    downloading = true;
+    dlMessage = null;
+    progress = null;
+    try {
+      const out = await api.downloadPost(target.provider, target.id);
+      if (target.id !== post.id) return;
+      local = out.entry;
+      dlMessage =
+        out.status === "downloaded"
+          ? { kind: "ok", text: `Saved original (${fmtSize(out.bytes)}).` }
+          : {
+              kind: "ok",
+              text:
+                out.entry.provider === target.provider && out.entry.remote_id === target.id
+                  ? "Already in your library."
+                  : `Same file already in your library (from ${out.entry.provider} #${out.entry.remote_id}).`,
+            };
+    } catch (e) {
+      if (target.id === post.id) dlMessage = { kind: "err", text: errorText(e) };
+    } finally {
+      if (target.id === post.id) downloading = false;
+    }
+  }
+
+  const openLocal = (reveal: boolean) =>
+    local &&
+    api.openLocal(local.local_path, reveal).catch((e) => (dlMessage = { kind: "err", text: errorText(e) }));
 
   // Reload whenever a different post is selected; ignore stale responses.
   let current = "";
@@ -24,11 +78,18 @@
     error = null;
     sampleFailed = false;
     sampleLoaded = false;
+    local = null;
+    downloading = false;
+    progress = null;
+    dlMessage = null;
     loading = true;
     api
       .postDetails(post.provider, id)
       .then((d) => {
-        if (current === id) details = d;
+        if (current === id) {
+          details = d;
+          local = d.local;
+        }
       })
       .catch((e) => {
         if (current === id) error = errorText(e);
@@ -81,15 +142,32 @@
     {/if}
   </div>
   {#if details && !details.sample_key}
-    <p class="hint">No sample available for this file type/size. The original downloads in M4.</p>
+    <p class="hint">No preview image for this file type/size.</p>
   {:else if sampleFailed}
     <p class="hint">Sample failed to load; showing nothing. Check the terminal log.</p>
   {/if}
 
   <div class="actions">
-    <button onclick={() => openUrl(post.post_url)}>Open on site</button>
-    <button disabled title="Milestone 4">Download original</button>
+    {#if local}
+      <button onclick={() => openLocal(false)}>Open file</button>
+      <button class="ghost" onclick={() => openLocal(true)}>Show in folder</button>
+    {:else}
+      <button disabled={downloading || loading || !!error} onclick={download}>
+        {downloading ? "Downloading…" : "Download original"}
+      </button>
+    {/if}
+    <button class="ghost" onclick={() => openUrl(post.post_url)}>Open on site</button>
   </div>
+  {#if downloading && progress}
+    <div class="bar" title={`${fmtSize(progress.bytes)}${progress.total ? ` of ${fmtSize(progress.total)}` : ""}`}>
+      <div style:width={progress.total ? `${Math.min(100, (progress.bytes / progress.total) * 100)}%` : "100%"}
+           class:indeterminate={!progress.total}></div>
+    </div>
+  {/if}
+  {#if local && !dlMessage}
+    <p class="ok small">In your library · {local.local_path}</p>
+  {/if}
+  {#if dlMessage}<p class={`${dlMessage.kind} small`}>{dlMessage.text}</p>{/if}
 
   {#if loading}
     <p class="hint">Loading details…</p>
@@ -185,6 +263,10 @@
   .small { font-size: 0.8rem; }
   .hint { color: #7d7e87; font-size: 0.8rem; margin: 4px 0; }
   .err { color: #f07b7b; font-size: 0.85rem; }
+  .ok { color: #6fd39a; }
+  .bar { height: 6px; background: #26272e; border-radius: 3px; overflow: hidden; margin: 6px 0; }
+  .bar > div { height: 100%; background: #4b5bd6; transition: width 0.2s; }
+  .bar > div.indeterminate { opacity: 0.5; }
   .group { margin: 12px 0; }
   h4 { margin: 0 0 6px; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.05em; color: #b5b6bf; }
   .tags { display: flex; flex-wrap: wrap; gap: 4px; }

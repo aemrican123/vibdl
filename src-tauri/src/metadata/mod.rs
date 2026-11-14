@@ -4,14 +4,15 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
 use crate::providers::{ImageboardProvider, RemotePost, TagCategory, TagInfo};
 
 const MAX_CACHED: usize = 200_000;
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CategorizedTags {
     pub artist: Vec<String>,
     pub character: Vec<String>,
@@ -24,6 +25,21 @@ pub struct CategorizedTags {
 }
 
 impl CategorizedTags {
+    /// (name, category) for every tag, in category order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, TagCategory)> {
+        [
+            (&self.artist, TagCategory::Artist),
+            (&self.character, TagCategory::Character),
+            (&self.copyright, TagCategory::Copyright),
+            (&self.general, TagCategory::General),
+            (&self.meta, TagCategory::Meta),
+            (&self.deprecated, TagCategory::Deprecated),
+            (&self.unknown, TagCategory::Unknown),
+        ]
+        .into_iter()
+        .flat_map(|(list, cat)| list.iter().map(move |n| (n.as_str(), cat)))
+    }
+
     pub fn from_infos(infos: &[TagInfo]) -> Self {
         let mut c = Self::default();
         for t in infos {

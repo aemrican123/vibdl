@@ -96,6 +96,40 @@ export interface PostDetails {
   tag_lookup_error: string | null;
   tags_looked_up: number;
   fields: Record<string, unknown>;
+  local: LocalEntry | null;
+}
+
+export interface LocalEntry {
+  provider: string;
+  remote_id: string;
+  md5: string;
+  /** Relative to the library folder. */
+  local_path: string;
+  downloaded_at: string;
+}
+
+export type DownloadOutcome =
+  | { status: "downloaded"; entry: LocalEntry; bytes: number }
+  | { status: "duplicate"; entry: LocalEntry };
+
+export interface DownloadProgress {
+  provider: string;
+  id: string;
+  bytes: number;
+  total: number | null;
+}
+
+export interface LibraryInfo {
+  root: string;
+  is_default: boolean;
+  post_count: number;
+}
+
+export interface RebuildReport {
+  sidecars: number;
+  imported: number;
+  missing_media: number;
+  errors: string[];
 }
 
 /** URL the webview can load for a registered thumbnail key. */
@@ -111,6 +145,11 @@ export const api = {
   clearCredentials: (provider: string) => invoke<CredentialStatus>("clear_credentials", { provider }),
   testConnection: (provider: string) => invoke<ConnectionTest>("test_connection", { provider }),
   postDetails: (provider: string, id: string) => invoke<PostDetails>("post_details", { provider, id }),
+  libraryInfo: () => invoke<LibraryInfo>("library_info"),
+  downloadPost: (provider: string, id: string) => invoke<DownloadOutcome>("download_post", { provider, id }),
+  openLocal: (localPath: string, reveal: boolean) => invoke<void>("open_local", { localPath, reveal }),
+  openLibraryFolder: () => invoke<void>("open_library_folder"),
+  rebuildLibrary: () => invoke<RebuildReport>("rebuild_library"),
   browseSearch: (tags: string, page: number) => invoke<BrowsePage>("browse_search", { tags, page }),
 };
 

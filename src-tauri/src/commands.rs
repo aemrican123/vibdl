@@ -4,9 +4,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::browse::{self, BrowsePage, PostCache, PostDetails, thumbs::Thumbs};
+use crate::db::LocalEntry;
+use crate::downloads::{self, Downloader, Library, Outcome, RebuildReport};
 use crate::error::{AppError, AppResult};
 use crate::metadata::{self, TagCache};
 use crate::net::ApiClient;
@@ -22,6 +25,10 @@ pub struct AppState {
     pub thumbs: Arc<Thumbs>,
     pub posts: PostCache,
     pub tag_cache: TagCache,
+    pub downloader: Downloader,
+    pub default_library_dir: PathBuf,
+    /// Opened lazily; reopened if the library folder setting changes.
+    pub library: Mutex<Option<Arc<Library>>>,
 }
 
 fn info(id: &str) -> AppResult<&'static ProviderInfo> {
@@ -63,6 +70,34 @@ impl AppState {
                 Box::new(GelbooruProvider::new(site, self.api.clone(), gelbooru::Credentials { user_id, api_key }))
             }
         })
+    }
+
+    fn library_root(&self) -> PathBuf {
+        self.snapshot().library_dir.unwrap_or_else(|| self.default_library_dir.clone())
+    }
+
+    fn library(&self) -> AppResult<Arc<Library>> {
+        let root = self.library_root();
+        let mut guard = self.library.lock().expect("library lock poisoned");
+        if let Some(lib) = guard.as_ref().filter(|l| l.root == root) {
+            return Ok(lib.clone());
+        }
+        let lib = Arc::new(Library::open(&root)?);
+        *guard = Some(lib.clone());
+        Ok(lib)
+    }
+
+    /// Post from recent results, or fetched from the board.
+    async fn post(&self, p: &dyn ImageboardProvider, id: &str) -> AppResult<crate::providers::RemotePost> {
+        if let Some(post) = self.posts.get(p.id(), id) {
+            return Ok(post);
+        }
+        let post = p
+            .get_post(id)
+            .await?
+            .ok_or_else(|| AppError::Parse(format!("post {id} not found")))?;
+        self.posts.put(&post);
+        Ok(post)
     }
 
     fn require_age(&self) -> AppResult<Settings> {
@@ -201,23 +236,119 @@ pub async fn browse_search(state: State<'_, AppState>, tags: String, page: u32) 
 pub async fn post_details(state: State<'_, AppState>, provider: String, id: String) -> AppResult<PostDetails> {
     let settings = state.require_age()?;
     let p = state.provider(&provider)?;
-    let post = match state.posts.get(p.id(), &id) {
-        Some(post) => post,
-        None => {
-            let post = p
-                .get_post(&id)
-                .await?
-                .ok_or_else(|| AppError::Parse(format!("post {id} not found")))?;
-            state.posts.put(&post);
-            post
-        }
-    };
+    let post = state.post(p.as_ref(), &id).await?;
     if !browse::rating_allowed(&post, &settings.allowed_ratings) {
         return Err(AppError::Settings("This post's rating is hidden by your settings.".into()));
     }
+    let local = state
+        .library()
+        .and_then(|lib| lib.db.find(post.provider, &post.remote_id, post.md5.as_deref()))
+        .unwrap_or_else(|e| {
+            tracing::warn!("library unavailable: {e}");
+            None
+        });
     let (tags, tag_err, looked_up) = metadata::categorize_post(p.as_ref(), &state.tag_cache, &post).await;
     if let Some(e) = &tag_err {
         tracing::warn!(post = %id, "tag lookup failed: {e}");
     }
-    Ok(browse::to_details(post, tags, tag_err, looked_up, &state.thumbs))
+    let mut details = browse::to_details(post, tags, tag_err, looked_up, &state.thumbs);
+    details.local = local;
+    Ok(details)
+}
+
+#[derive(Serialize)]
+pub struct LibraryInfo {
+    pub root: String,
+    pub is_default: bool,
+    pub post_count: u64,
+}
+
+#[tauri::command]
+pub fn library_info(state: State<'_, AppState>) -> AppResult<LibraryInfo> {
+    let lib = state.library()?;
+    Ok(LibraryInfo {
+        root: lib.root.display().to_string(),
+        is_default: state.snapshot().library_dir.is_none(),
+        post_count: lib.db.post_count()?,
+    })
+}
+
+#[derive(Clone, Serialize)]
+pub struct DownloadProgress {
+    pub provider: String,
+    pub id: String,
+    pub bytes: u64,
+    pub total: Option<u64>,
+}
+
+/// Download one post's original into the library. Emits `download-progress`.
+#[tauri::command]
+pub async fn download_post(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider: String,
+    id: String,
+) -> AppResult<Outcome> {
+    let settings = state.require_age()?;
+    let p = state.provider(&provider)?;
+    let post = state.post(p.as_ref(), &id).await?;
+    if !browse::rating_allowed(&post, &settings.allowed_ratings) {
+        return Err(AppError::Settings("This post's rating is hidden by your settings.".into()));
+    }
+    let lib = state.library()?;
+    let (tags, _, _) = metadata::categorize_post(p.as_ref(), &state.tag_cache, &post).await;
+    let (prov, pid) = (provider.clone(), id.clone());
+    state
+        .downloader
+        .download(&lib, &post, tags, move |bytes, total| {
+            let _ = app.emit(
+                "download-progress",
+                DownloadProgress { provider: prov.clone(), id: pid.clone(), bytes, total },
+            );
+        })
+        .await
+}
+
+#[tauri::command]
+pub fn local_status(
+    state: State<'_, AppState>,
+    provider: String,
+    id: String,
+    md5: Option<String>,
+) -> AppResult<Option<LocalEntry>> {
+    state.library()?.db.find(&provider, &id, md5.as_deref())
+}
+
+/// Open a library file with its default app, or show it in Explorer.
+/// Only paths inside the library are accepted.
+#[tauri::command]
+pub fn open_local(app: AppHandle, state: State<'_, AppState>, local_path: String, reveal: bool) -> AppResult<()> {
+    let lib = state.library()?;
+    let abs = crate::storage::resolve_inside(&lib.root, std::path::Path::new(&local_path))?;
+    if !abs.exists() {
+        return Err(AppError::Settings("That file is no longer in the library folder.".into()));
+    }
+    let result = if reveal {
+        app.opener().reveal_item_in_dir(&abs)
+    } else {
+        app.opener().open_path(abs.display().to_string(), None::<&str>)
+    };
+    result.map_err(|e| AppError::Settings(format!("couldn't open: {e}")))
+}
+
+#[tauri::command]
+pub fn open_library_folder(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
+    let lib = state.library()?;
+    app.opener()
+        .open_path(lib.root.display().to_string(), None::<&str>)
+        .map_err(|e| AppError::Settings(format!("couldn't open: {e}")))
+}
+
+/// Rebuild the SQLite index from sidecar files.
+#[tauri::command]
+pub async fn rebuild_library(state: State<'_, AppState>) -> AppResult<RebuildReport> {
+    let lib = state.library()?;
+    tauri::async_runtime::spawn_blocking(move || downloads::rebuild(&lib))
+        .await
+        .map_err(|e| AppError::Settings(format!("rebuild failed: {e}")))
 }

@@ -7,15 +7,21 @@
 //!   settings/   settings file + OS-keychain credentials
 //!   commands    Tauri IPC surface
 //!   metadata/   tag categorization + tag-type cache
-//! Coming in later milestones: downloads/, storage/, db/, library/
+//!   downloads/  original downloads (verify, atomic move) + index rebuild
+//!   storage/    library folder layout + sidecar JSON
+//!   db/         SQLite index of the library
+//! Coming next: library/ (offline browsing + filters)
 
 pub mod browse;
 pub mod commands;
+pub mod db;
+pub mod downloads;
 pub mod error;
 pub mod metadata;
 pub mod net;
 pub mod providers;
 pub mod settings;
+pub mod storage;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -79,6 +85,12 @@ pub fn run() {
             let (dir, cap) = (thumbs.dir().to_path_buf(), thumbs.cap_bytes());
             tauri::async_runtime::spawn_blocking(move || thumbs::sweep(&dir, cap));
 
+            let default_library_dir = app
+                .path()
+                .picture_dir()
+                .map(|p| p.join("VIBDL"))
+                .or_else(|_| app.path().app_data_dir().map(|p| p.join("library")))?;
+
             tracing::info!(path = %settings_path.display(), "settings loaded");
             app.manage(AppState {
                 settings_path,
@@ -87,6 +99,9 @@ pub fn run() {
                 thumbs: Arc::new(thumbs),
                 posts: browse::PostCache::default(),
                 tag_cache: metadata::TagCache::default(),
+                downloader: downloads::Downloader::new(net::build_http_no_redirect()?),
+                default_library_dir,
+                library: Mutex::new(None),
             });
             Ok(())
         })
@@ -100,6 +115,12 @@ pub fn run() {
             commands::test_connection,
             commands::browse_search,
             commands::post_details,
+            commands::library_info,
+            commands::download_post,
+            commands::local_status,
+            commands::open_local,
+            commands::open_library_folder,
+            commands::rebuild_library,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

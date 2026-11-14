@@ -6,7 +6,7 @@ Personal use only — not distributed. Full plan: [docs/PLAN.md](docs/PLAN.md).
 
 ## Stack
 
-Tauri 2 (Rust core) · SvelteKit + TypeScript UI · SQLite (coming in M4)
+Tauri 2 (Rust core) · SvelteKit + TypeScript UI · SQLite
 
 ## Develop
 
@@ -33,6 +33,9 @@ src-tauri/src/
     danbooru/           Danbooru client (inline tag categories) + parser + fixtures
     gelbooru/           Gelbooru-engine client (Gelbooru, Rule34) + parser + fixtures
   metadata/             tag categorization + cache
+  downloads/            original downloads + index rebuild
+  storage/              library folder layout + sidecar JSON
+  db/                   SQLite index
   settings/             settings.json + OS keychain credentials
 docs/PLAN.md            feasibility report & roadmap
 ```
@@ -44,7 +47,7 @@ docs/PLAN.md            feasibility report & roadmap
 - [x] M2 — Online browser (thumbnail grid, infinite scroll, thumbnail disk cache)
 - [x] M3 — Post detail + categorized tags + sample preview
 - [x] Provider picker (Danbooru / Gelbooru / Rule34); Gelbooru images blocked by hotlink protection
-- [ ] M4 — Single download + SQLite + sidecars
+- [x] M4 — Single download (MD5-verified, atomic) + SQLite index + sidecars + rebuild
 - [ ] M5 — Local library (MVP)
 
 ## Safety rules baked in

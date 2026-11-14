@@ -74,6 +74,7 @@ impl Settings {
             .map(|(k, v)| (k, v.trim().to_string()))
             .filter(|(k, v)| !v.is_empty() && crate::providers::provider_info(k).is_some())
             .collect();
+        self.library_dir = self.library_dir.filter(|p| !p.as_os_str().is_empty() && p.is_absolute());
         if crate::providers::provider_info(&self.active_provider).is_none() {
             self.active_provider = "danbooru".into();
         }

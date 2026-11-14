@@ -5,6 +5,8 @@
     errorText,
     type ConnectionTest,
     type CredentialStatus,
+    type LibraryInfo,
+    type RebuildReport,
     type ProviderInfo,
     type Settings,
   } from "$lib/api";
@@ -24,6 +26,31 @@
   let message = $state<{ kind: "ok" | "err"; text: string } | null>(null);
   let test = $state<ConnectionTest | null>(null);
   let adultConfirm = $state(false);
+  let lib = $state<LibraryInfo | null>(null);
+  let libPath = $state("");
+  let rebuild = $state<RebuildReport | null>(null);
+
+  async function refreshLibrary() {
+    lib = await api.libraryInfo();
+    libPath = lib.root;
+  }
+
+  const saveLibraryDir = (useDefault: boolean) =>
+    run(async () => {
+      settings = await api.saveSettings({ ...settings!, library_dir: useDefault ? null : libPath.trim() || null });
+      await refreshLibrary();
+      if (!useDefault && settings.library_dir === null && libPath.trim()) {
+        throw "Use a full folder path, e.g. D:\\Pictures\\VIBDL";
+      }
+      rebuild = null;
+      message = { kind: "ok", text: `Library folder: ${lib!.root}` };
+    });
+
+  const runRebuild = () =>
+    run(async () => {
+      rebuild = await api.rebuildLibrary();
+      await refreshLibrary();
+    });
 
   const current = $derived(providers.find((p) => p.id === editing));
   const currentStatus = $derived(statuses[editing]);
@@ -46,6 +73,7 @@
       providers = await api.listProviders();
       await refreshStatuses();
       edit(settings.active_provider);
+      await refreshLibrary();
     } catch (e) {
       message = { kind: "err", text: errorText(e) };
     }
@@ -202,6 +230,34 @@
     {/if}
 
     <section class="card">
+      <h2>Library folder</h2>
+      <p class="hint">
+        Originals are saved byte-for-byte with a <code>.vibdl.json</code> metadata file next to each one.
+        The search index lives in <code>.vibdl/library.sqlite</code> inside this folder.
+      </p>
+      {#if lib}
+        <p>
+          <strong>{lib.post_count.toLocaleString()}</strong> item{lib.post_count === 1 ? "" : "s"} in the library{lib.is_default ? " (default folder)" : ""}.
+        </p>
+      {/if}
+      <label>Folder <input bind:value={libPath} spellcheck="false" autocomplete="off" /></label>
+      <div class="row">
+        <button disabled={busy || !libPath.trim() || libPath.trim() === lib?.root} onclick={() => saveLibraryDir(false)}>Use this folder</button>
+        <button class="ghost" disabled={busy || lib?.is_default} onclick={() => saveLibraryDir(true)}>Use default</button>
+        <button class="ghost" disabled={busy} onclick={() => api.openLibraryFolder().catch((e) => (message = { kind: "err", text: errorText(e) }))}>Open folder</button>
+        <button class="ghost" disabled={busy} onclick={runRebuild} title="Re-create the index from the .vibdl.json files">Rebuild index</button>
+      </div>
+      {#if rebuild}
+        <div class="result">
+          Found {rebuild.sidecars} metadata file{rebuild.sidecars === 1 ? "" : "s"}: imported {rebuild.imported}{rebuild.missing_media
+            ? `, ${rebuild.missing_media} skipped (image file missing)`
+            : ""}.
+          {#each rebuild.errors as e}<div class="err-line">{e}</div>{/each}
+        </div>
+      {/if}
+    </section>
+
+    <section class="card">
       <h2>Content ratings</h2>
       <label class="check">
         <input type="checkbox" bind:checked={adultConfirm} />
@@ -262,4 +318,5 @@
   code { font-size: 0.8rem; word-break: break-word; color: #b8bdf5; }
   strong.ok, p.ok { color: #6fd39a; }
   p.err { color: #f07b7b; }
+  .err-line { color: #f07b7b; font-size: 0.8rem; margin-top: 4px; }
 </style>

@@ -174,6 +174,8 @@ pub struct PostDetails {
     pub tags_looked_up: usize,
     /// Every field the board returned, for the "all fields" view.
     pub fields: Value,
+    /// Set when this post (or the same file) is already in the library.
+    pub local: Option<crate::db::LocalEntry>,
 }
 
 const VIDEO_EXTS: [&str; 6] = ["webm", "mp4", "mov", "mkv", "swf", "zip"];
@@ -256,6 +258,7 @@ pub fn to_details(
         tag_lookup_error,
         tags_looked_up,
         fields: p.raw,
+        local: None,
     }
 }
 
