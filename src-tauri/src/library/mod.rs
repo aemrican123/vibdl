@@ -10,6 +10,7 @@
 //!   `board:danbooru`         from a board (also `provider:`)
 //!   `type:png`               file extension (also `ext:`)
 
+pub mod manage;
 pub mod thumbs;
 
 use rusqlite::types::Value as SqlValue;
@@ -218,12 +219,13 @@ pub struct Facet {
     pub count: u64,
 }
 
-/// Most common artists / characters / copyrights among the matching items.
+/// Most common tags per category among the matching items.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Facets {
     pub artist: Vec<Facet>,
     pub character: Vec<Facet>,
     pub copyright: Vec<Facet>,
+    pub general: Vec<Facet>,
 }
 
 pub fn facets(db: &Db, q: &str, allowed: &[String]) -> AppResult<Facets> {
@@ -231,16 +233,17 @@ pub fn facets(db: &Db, q: &str, allowed: &[String]) -> AppResult<Facets> {
     let (cond, params) = where_clause(&terms, allowed);
     db.with_conn(|conn| {
         let mut out = Facets::default();
-        for (cat, bucket) in [
-            ("artist", &mut out.artist),
-            ("character", &mut out.character),
-            ("copyright", &mut out.copyright),
+        for (cat, bucket, limit) in [
+            ("artist", &mut out.artist, 25),
+            ("character", &mut out.character, 25),
+            ("copyright", &mut out.copyright, 25),
+            ("general", &mut out.general, 60),
         ] {
             let mut stmt = conn.prepare(&format!(
                 "SELECT t.name, COUNT(DISTINCT pt.post_id) AS n
                  FROM post_tags pt JOIN tags t ON t.id = pt.tag_id
                  WHERE t.category = ? AND pt.post_id IN (SELECT p.id FROM posts p WHERE {cond})
-                 GROUP BY t.name ORDER BY n DESC, t.name ASC LIMIT 25"
+                 GROUP BY t.name ORDER BY n DESC, t.name ASC LIMIT {limit}"
             ))?;
             let mut all = vec![SqlValue::Text(cat.into())];
             all.extend(params.iter().cloned());
@@ -252,6 +255,58 @@ pub fn facets(db: &Db, q: &str, allowed: &[String]) -> AppResult<Facets> {
         }
         Ok(out)
     })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Suggestion {
+    pub name: String,
+    pub category: String,
+    pub count: u64,
+}
+
+/// Library tags starting with `prefix` (optionally within a category),
+/// most-used first.
+pub fn suggest(db: &Db, prefix: &str, category: Option<&str>, limit: u32) -> AppResult<Vec<Suggestion>> {
+    let escaped: String = prefix
+        .chars()
+        .flat_map(|c| if matches!(c, '%' | '_' | '\\') { vec!['\\', c] } else { vec![c] })
+        .collect();
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT t.name, t.category, COUNT(DISTINCT pt.post_id) AS n
+             FROM tags t JOIN post_tags pt ON pt.tag_id = t.id
+             WHERE t.name LIKE ?1 ESCAPE '\\' {}
+             GROUP BY t.name, t.category ORDER BY n DESC, t.name ASC LIMIT {limit}",
+            if category.is_some() { "AND t.category = ?2" } else { "" }
+        ))?;
+        let like = format!("{escaped}%");
+        let map = |r: &rusqlite::Row<'_>| {
+            Ok(Suggestion { name: r.get(0)?, category: r.get(1)?, count: r.get::<_, i64>(2)? as u64 })
+        };
+        match category {
+            Some(c) => stmt.query_map(rusqlite::params![like, c], map)?.collect(),
+            None => stmt.query_map(rusqlite::params![like], map)?.collect(),
+        }
+    })
+}
+
+/// Split a typed token into (category, prefix) using the filter syntax.
+pub fn split_category(token: &str) -> (Option<&'static str>, String) {
+    let t = token.trim().trim_start_matches('-').to_lowercase();
+    if let Some((p, rest)) = t.split_once(':') {
+        let cat = match p {
+            "artist" => Some("artist"),
+            "character" | "char" => Some("character"),
+            "copyright" | "copy" => Some("copyright"),
+            "general" => Some("general"),
+            "meta" => Some("meta"),
+            _ => None,
+        };
+        if cat.is_some() {
+            return (cat, rest.to_string());
+        }
+    }
+    (None, t)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -415,12 +470,31 @@ mod tests {
     }
 
     #[test]
+    fn suggests_by_prefix_and_category() {
+        let db = seeded();
+        let s = suggest(&db, "artist", None, 10).unwrap();
+        // "artist_a" is an artist tag on #1 and a general tag on #3.
+        assert_eq!(s.len(), 3);
+        let s = suggest(&db, "artist_", Some("artist"), 10).unwrap();
+        let names: Vec<&str> = s.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, vec!["artist_a", "artist_b"]);
+        let s = suggest(&db, "char", None, 10).unwrap();
+        assert_eq!((s[0].name.as_str(), s[0].count), ("char_x", 2));
+        assert!(suggest(&db, "zzz", None, 10).unwrap().is_empty());
+        // LIKE wildcards in the prefix are literal.
+        assert!(suggest(&db, "%", None, 10).unwrap().is_empty());
+        assert_eq!(split_category("-char:ch"), (Some("character"), "ch".into()));
+        assert_eq!(split_category("re:ze"), (None, "re:ze".into()));
+    }
+
+    #[test]
     fn facets_and_details() {
         let db = seeded();
         let f = facets(&db, "", &all()).unwrap();
         assert_eq!(f.character[0].name, "char_x");
         assert_eq!(f.character[0].count, 2);
         assert_eq!(f.artist.len(), 2);
+        assert!(f.general.iter().any(|g| g.name == "long_hair" && g.count == 1));
 
         let d = details(&db, "danbooru", "1").unwrap().unwrap();
         assert_eq!(d.tags.artist, vec!["artist_a"]);

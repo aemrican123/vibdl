@@ -5,6 +5,7 @@
   import {
     api,
     errorText,
+    mediaUrl,
     thumbUrl,
     type BrowsePost,
     type CategorizedTags,
@@ -123,7 +124,16 @@
   </div>
 
   <div class="preview">
-    {#if details?.sample_key && !sampleFailed}
+    {#if details?.video_key}
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video
+        controls
+        loop
+        preload="metadata"
+        poster={post.thumb_key ? thumbUrl(post.thumb_key) : undefined}
+        src={mediaUrl(details.video_key)}
+      ></video>
+    {:else if details?.sample_key && !sampleFailed}
       <!-- Thumbnail shows instantly underneath while the sample loads. -->
       {#if post.thumb_key && !sampleLoaded}
         <img class="under" src={thumbUrl(post.thumb_key)} alt="" />
@@ -141,7 +151,7 @@
       <span class="none">no preview</span>
     {/if}
   </div>
-  {#if details && !details.sample_key}
+  {#if details && !details.sample_key && !details.video_key}
     <p class="hint">No preview image for this file type/size.</p>
   {:else if sampleFailed}
     <p class="hint">Sample failed to load; showing nothing. Check the terminal log.</p>
@@ -251,6 +261,7 @@
     background: #111216; border-radius: 6px; overflow: hidden;
   }
   .preview img { max-width: 100%; max-height: 480px; object-fit: contain; display: block; }
+  .preview video { width: 100%; max-height: 480px; background: #000; display: block; }
   .preview img.under { position: absolute; inset: 0; margin: auto; filter: blur(2px); opacity: 0.6; }
   .preview img.hidden { visibility: hidden; position: absolute; }
   .none { color: #6b6c75; font-size: 0.85rem; }

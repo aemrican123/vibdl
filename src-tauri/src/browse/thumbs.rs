@@ -22,6 +22,7 @@ use crate::net::RateLimiter;
 const MAX_THUMB_BYTES: usize = 5 * 1024 * 1024;
 const MAX_SAMPLE_BYTES: usize = 25 * 1024 * 1024;
 const SAMPLE_SUFFIX: &str = "-s";
+const VIDEO_SUFFIX: &str = "-v";
 const MAX_REGISTERED: usize = 50_000;
 const SWEEP_EVERY_WRITES: u32 = 50;
 /// The image CDN rate-limits (HTTP 429) bursts, so stay under it:
@@ -61,8 +62,15 @@ pub fn sample_key(provider: &str, md5: &str) -> Option<String> {
     make_key(provider, md5).map(|k| k + SAMPLE_SUFFIX)
 }
 
+pub fn video_key(provider: &str, md5: &str) -> Option<String> {
+    make_key(provider, md5).map(|k| k + VIDEO_SUFFIX)
+}
+
 pub fn is_valid_key(key: &str) -> bool {
-    let key = key.strip_suffix(SAMPLE_SUFFIX).unwrap_or(key);
+    let key = key
+        .strip_suffix(SAMPLE_SUFFIX)
+        .or_else(|| key.strip_suffix(VIDEO_SUFFIX))
+        .unwrap_or(key);
     let Some((provider, md5)) = key.split_once('-') else {
         return false;
     };
@@ -116,6 +124,23 @@ impl Thumbs {
     /// Remember a sample-preview URL. Returns the key.
     pub fn register_sample(&self, provider: &str, md5: &str, url: &str) -> Option<String> {
         self.insert(sample_key(provider, md5)?, url)
+    }
+
+    /// Remember a video URL (served by the `media` scheme). Returns the key.
+    pub fn register_video(&self, provider: &str, md5: &str, url: &str) -> Option<String> {
+        self.insert(video_key(provider, md5)?, url)
+    }
+
+    /// URL for a registered video key.
+    pub fn video_url(&self, key: &str) -> Option<String> {
+        if !key.ends_with(VIDEO_SUFFIX) || !is_valid_key(key) {
+            return None;
+        }
+        self.lookup(key)
+    }
+
+    pub fn http(&self) -> &reqwest::Client {
+        &self.http
     }
 
     fn insert(&self, key: String, url: &str) -> Option<String> {
@@ -233,7 +258,7 @@ impl Thumbs {
     /// Thumbnails: cached bytes, or fetch + cache. Samples: fetch, no disk.
     /// `Ok(None)` = unknown/invalid key.
     pub async fn get(&self, key: &str) -> AppResult<Option<(Vec<u8>, &'static str)>> {
-        if !is_valid_key(key) || self.is_missing(key) {
+        if !is_valid_key(key) || self.is_missing(key) || key.ends_with(VIDEO_SUFFIX) {
             return Ok(None);
         }
         if key.ends_with(SAMPLE_SUFFIX) {

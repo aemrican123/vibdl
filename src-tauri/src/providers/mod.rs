@@ -174,6 +174,28 @@ pub trait ImageboardProvider: Send + Sync {
     /// Returns one entry per requested name; unknown names get `Unknown`.
     async fn categorize_tags(&self, names: &[String]) -> AppResult<Vec<TagInfo>>;
     fn post_url(&self, remote_id: &str) -> String;
+    /// Tags starting with `prefix`, most-used first (search suggestions).
+    async fn suggest_tags(&self, prefix: &str, limit: u32) -> AppResult<Vec<TagInfo>> {
+        let _ = (prefix, limit);
+        Ok(vec![])
+    }
+}
+
+/// Normalize the word being typed into a suggestion prefix: lowercase, no
+/// leading `-`/`~`, no spaces. `None` = don't suggest.
+pub fn suggestion_prefix(raw: &str) -> Option<String> {
+    let p = raw.trim().trim_start_matches(['-', '~']).to_lowercase();
+    let ok = p.chars().count() >= 2 && p.len() <= 64 && !p.contains(char::is_whitespace) && !p.contains('*');
+    ok.then_some(p)
+}
+
+/// Keep only real prefix matches (board wildcards are looser), best first.
+pub fn filter_suggestions(prefix: &str, mut tags: Vec<TagInfo>, limit: usize) -> Vec<TagInfo> {
+    tags.retain(|t| t.name.to_lowercase().starts_with(prefix));
+    tags.sort_by(|a, b| b.count.unwrap_or(0).cmp(&a.count.unwrap_or(0)).then(a.name.cmp(&b.name)));
+    tags.dedup_by(|a, b| a.name == b.name);
+    tags.truncate(limit);
+    tags
 }
 
 #[cfg(test)]
@@ -191,6 +213,17 @@ mod tests {
             "long_hair blue_eyes -rating:sensitive -rating:questionable -rating:explicit"
         );
         assert_eq!(exclusion_query("", &s(&ALL_RATINGS)), "");
+    }
+
+    #[test]
+    fn suggestion_prefixes_and_filtering() {
+        assert_eq!(suggestion_prefix(" -Long").as_deref(), Some("long"));
+        assert_eq!(suggestion_prefix("l"), None);
+        assert_eq!(suggestion_prefix("a*b"), None);
+        let t = |n: &str, c: u64| TagInfo { name: n.into(), category: TagCategory::General, count: Some(c) };
+        let out = filter_suggestions("long_h", vec![t("long_hair", 9), t("longxhair", 99), t("long_hair_x", 3), t("long_hair", 9)], 10);
+        let names: Vec<&str> = out.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["long_hair", "long_hair_x"]);
     }
 
     #[test]

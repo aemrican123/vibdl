@@ -3,8 +3,10 @@
   import {
     api,
     errorText,
+    isVideoExt,
     libraryFileUrl,
     libraryThumbUrl,
+    libraryVideoUrl,
     type CategorizedTags,
     type LibraryDetails,
     type LibraryItem,
@@ -14,7 +16,43 @@
     item,
     onclose,
     onfilter,
-  }: { item: LibraryItem; onclose: () => void; onfilter: (term: string, add: boolean) => void } = $props();
+    ondeleted,
+  }: {
+    item: LibraryItem;
+    onclose: () => void;
+    onfilter: (term: string, add: boolean) => void;
+    ondeleted?: (item: LibraryItem) => void;
+  } = $props();
+
+  let confirmDelete = $state(false);
+  let working = $state(false);
+  let note = $state<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  async function refreshMeta() {
+    working = true;
+    note = null;
+    try {
+      const d = await api.libraryRefresh(item.provider, item.remote_id);
+      if (d) details = d;
+      note = { kind: "ok", text: "Metadata refreshed from the board." };
+    } catch (e) {
+      note = { kind: "err", text: errorText(e) };
+    } finally {
+      working = false;
+    }
+  }
+
+  async function doDelete() {
+    working = true;
+    note = null;
+    try {
+      await api.libraryDelete(item.provider, item.remote_id);
+      ondeleted?.(item);
+    } catch (e) {
+      note = { kind: "err", text: errorText(e) };
+      working = false;
+    }
+  }
 
   let details = $state<LibraryDetails | null>(null);
   let error = $state<string | null>(null);
@@ -33,6 +71,9 @@
     error = null;
     fullLoaded = false;
     fullFailed = false;
+    confirmDelete = false;
+    working = false;
+    note = null;
     api
       .libraryDetails(item.provider, item.remote_id)
       .then((d) => {
@@ -70,7 +111,10 @@
   </div>
 
   <div class="preview">
-    {#if isStill && !fullFailed}
+    {#if isVideoExt(item.file_ext)}
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video controls loop preload="metadata" poster={libraryThumbUrl(item)} src={libraryVideoUrl(item)}></video>
+    {:else if isStill && !fullFailed}
       {#if !fullLoaded}<img class="under" src={libraryThumbUrl(item)} alt="" />{/if}
       <img
         class:hidden={!fullLoaded}
@@ -90,6 +134,24 @@
     <button class="ghost" onclick={() => open(true)}>Show in folder</button>
     <button class="ghost" onclick={() => openUrl(item.post_url)}>Open post</button>
   </div>
+  <div class="actions">
+    <button class="ghost small" disabled={working} onclick={refreshMeta} title="Re-download tags and info from the board (the image isn't touched)">
+      Refresh metadata
+    </button>
+    {#if !confirmDelete}
+      <button class="ghost small danger" disabled={working} onclick={() => (confirmDelete = true)}>Delete…</button>
+    {/if}
+  </div>
+  {#if confirmDelete}
+    <div class="confirm">
+      <p>Move this image, its metadata file and thumbnail to the <strong>Recycle Bin</strong> and remove it from the library?</p>
+      <div class="actions">
+        <button class="danger-solid" disabled={working} onclick={doDelete}>Move to Recycle Bin</button>
+        <button class="ghost" disabled={working} onclick={() => (confirmDelete = false)}>Cancel</button>
+      </div>
+    </div>
+  {/if}
+  {#if note}<p class={`${note.kind} small`}>{note.text}</p>{/if}
 
   <dl>
     <dt>Resolution</dt><dd>{item.width ?? "?"} × {item.height ?? "?"}</dd>
@@ -161,6 +223,7 @@
     background: #111216; border-radius: 6px; overflow: hidden;
   }
   .preview img { max-width: 100%; max-height: 520px; object-fit: contain; display: block; }
+  .preview video { width: 100%; max-height: 520px; background: #000; display: block; }
   .preview img.under { position: absolute; inset: 0; margin: auto; filter: blur(2px); opacity: 0.6; }
   .preview img.hidden { visibility: hidden; position: absolute; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
@@ -171,6 +234,12 @@
   .dim { color: #7d7e87; }
   .small { font-size: 0.8rem; }
   .err { color: #f07b7b; font-size: 0.85rem; }
+  .ok { color: #6fd39a; }
+  .confirm { background: #2a1d1f; border: 1px solid #5a2a2a; border-radius: 6px; padding: 8px 10px; margin: 6px 0; font-size: 0.85rem; }
+  .confirm p { margin: 0 0 6px; }
+  button.danger { color: #f07b7b; border-color: #5a2a2a; }
+  button.danger-solid { background: #b8433f; border-color: #b8433f; }
+  button:disabled { opacity: 0.45; cursor: default; }
   .group { margin: 12px 0; }
   h4 { margin: 0 0 6px; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.05em; color: #b5b6bf; }
   .tags { display: flex; flex-wrap: wrap; gap: 4px; }

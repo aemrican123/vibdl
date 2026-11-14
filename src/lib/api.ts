@@ -115,6 +115,8 @@ export interface PostDetails {
   thumb_key: string | null;
   sample_key: string | null;
   preview_is_original: boolean;
+  /** Stream key for mp4/webm posts (media scheme). */
+  video_key: string | null;
   tags: CategorizedTags;
   tag_lookup_error: string | null;
   tags_looked_up: number;
@@ -186,6 +188,7 @@ export interface Facets {
   artist: Facet[];
   character: Facet[];
   copyright: Facet[];
+  general: Facet[];
 }
 
 export interface LibraryDetails {
@@ -197,11 +200,46 @@ export interface LibraryDetails {
   fields: Record<string, unknown>;
 }
 
+export interface DeleteReport {
+  removed_from_index: boolean;
+  files_removed: number;
+}
+
+export interface SimilarReport {
+  groups: LibraryItem[][];
+  scanned: number;
+  skipped: number;
+}
+
+export interface CheckReport {
+  total: number;
+  missing: LocalEntry[];
+}
+
+export interface ExportReport {
+  copied: number;
+  skipped_existing: number;
+  errors: string[];
+  dest: string;
+}
+
 /** Offline library thumbnail / original file URLs (served by Rust). */
 export const libraryThumbUrl = (i: { provider: string; md5: string }) =>
   convertFileSrc(`t-${i.provider}-${i.md5}`, "library");
 export const libraryFileUrl = (i: { provider: string; md5: string }) =>
   convertFileSrc(`f-${i.provider}-${i.md5}`, "library");
+
+export interface Suggestion {
+  name: string;
+  category: string;
+  count: number | null;
+}
+
+/** Video stream URLs (Range-capable, served by Rust). */
+export const mediaUrl = (key: string) => convertFileSrc(key, "media");
+export const libraryVideoUrl = (i: { provider: string; md5: string }) =>
+  convertFileSrc(`l-${i.provider}-${i.md5}`, "media");
+export const isVideoExt = (ext: string | null | undefined) => !!ext && ["mp4", "webm"].includes(ext.toLowerCase());
 
 /** URL the webview can load for a registered thumbnail key. */
 export const thumbUrl = (key: string) => convertFileSrc(key, "thumb");
@@ -237,6 +275,17 @@ export const api = {
   queueCancel: (key: string | null) => invoke<number>("queue_cancel", { key }),
   queueRetryFailed: () => invoke<number>("queue_retry_failed"),
   queueClearFinished: () => invoke<void>("queue_clear_finished"),
+  libraryDelete: (provider: string, remoteId: string) =>
+    invoke<DeleteReport>("library_delete", { provider, remoteId }),
+  libraryRefresh: (provider: string, remoteId: string) =>
+    invoke<LibraryDetails | null>("library_refresh", { provider, remoteId }),
+  librarySimilar: () => invoke<SimilarReport>("library_similar"),
+  libraryCheck: () => invoke<CheckReport>("library_check"),
+  libraryRemoveMissing: () => invoke<number>("library_remove_missing"),
+  libraryExport: (q: string, dest: string, pattern: string) =>
+    invoke<ExportReport>("library_export", { q, dest, pattern }),
+  suggestTags: (prefix: string) => invoke<Suggestion[]>("suggest_tags", { prefix }),
+  librarySuggest: (token: string) => invoke<Suggestion[]>("library_suggest", { token }),
   browseSearch: (tags: string, page: number) => invoke<BrowsePage>("browse_search", { tags, page }),
 };
 

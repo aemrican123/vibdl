@@ -96,6 +96,36 @@ pub fn run() {
                 responder.respond(resp);
             });
         })
+        // Video streaming with Range support: media://localhost/<key>.
+        .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let key = request.uri().path().trim_start_matches('/').to_string();
+            let range = browse::media::parse_range(
+                request.headers().get(header::RANGE).and_then(|v| v.to_str().ok()),
+            );
+            tauri::async_runtime::spawn(async move {
+                let state = app.state::<AppState>();
+                let resp = match commands::serve_media(&state, &key, range).await {
+                    Ok(Some(m)) => {
+                        let mut b = Response::builder()
+                            .status(m.status)
+                            .header(header::CONTENT_TYPE, m.content_type)
+                            .header(header::ACCEPT_RANGES, "bytes")
+                            .header(header::CACHE_CONTROL, "no-store");
+                        if let Some(cr) = m.content_range {
+                            b = b.header(header::CONTENT_RANGE, cr);
+                        }
+                        b.body(m.bytes).unwrap_or_else(|_| empty(500))
+                    }
+                    Ok(None) => empty(404),
+                    Err(e) => {
+                        tracing::warn!(%key, "video stream failed: {e}");
+                        empty(502)
+                    }
+                };
+                responder.respond(resp);
+            });
+        })
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;
@@ -130,6 +160,7 @@ pub fn run() {
                 library: Mutex::new(None),
                 thumb_gen: tokio::sync::Semaphore::new(2),
                 queue: queue::Queue::default(),
+                suggest_cache: Mutex::new(Default::default()),
             });
             tauri::async_runtime::spawn(commands::queue_worker(app.handle().clone()));
             Ok(())
@@ -154,6 +185,14 @@ pub fn run() {
             commands::library_facets,
             commands::library_details,
             commands::local_status_many,
+            commands::suggest_tags,
+            commands::library_suggest,
+            commands::library_delete,
+            commands::library_refresh,
+            commands::library_similar,
+            commands::library_check,
+            commands::library_remove_missing,
+            commands::library_export,
             commands::queue_add,
             commands::queue_list,
             commands::queue_cancel,

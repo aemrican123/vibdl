@@ -130,4 +130,14 @@ impl ImageboardProvider for DanbooruProvider {
     fn post_url(&self, remote_id: &str) -> String {
         post_url(remote_id)
     }
+
+    async fn suggest_tags(&self, prefix: &str, limit: u32) -> AppResult<Vec<TagInfo>> {
+        let mut q = self.auth();
+        q.push(("search[name_matches]", format!("{prefix}*")));
+        q.push(("search[order]", "count".into()));
+        q.push(("search[hide_empty]", "yes".into()));
+        q.push(("limit", limit.min(50).to_string()));
+        let body = self.client.get_json(&format!("{BASE_URL}/tags.json"), &q).await?;
+        Ok(super::filter_suggestions(prefix, parse::tags(&body)?, limit as usize))
+    }
 }

@@ -11,7 +11,7 @@ use crate::error::{AppError, AppResult};
 use crate::providers::TagCategory;
 use crate::storage::Sidecar;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE posts (
@@ -48,6 +48,14 @@ CREATE TABLE post_tags (
     PRIMARY KEY (post_id, tag_id)
 );
 CREATE INDEX post_tags_by_tag ON post_tags (tag_id, post_id);
+";
+
+/// v2: perceptual hashes for "similar images".
+const SCHEMA_V2: &str = "
+CREATE TABLE phash (
+    post_id INTEGER PRIMARY KEY REFERENCES posts (id) ON DELETE CASCADE,
+    hash    INTEGER NOT NULL
+);
 ";
 
 fn db_err(e: rusqlite::Error) -> AppError {
@@ -98,7 +106,12 @@ impl Db {
             .map_err(db_err)?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(db_err)?;
         if version == 0 {
-            conn.execute_batch(&format!("BEGIN; {SCHEMA_V1} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"))
+            conn.execute_batch(&format!(
+                "BEGIN; {SCHEMA_V1} {SCHEMA_V2} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+            ))
+            .map_err(db_err)?;
+        } else if version == 1 {
+            conn.execute_batch(&format!("BEGIN; {SCHEMA_V2} PRAGMA user_version = 2; COMMIT;"))
                 .map_err(db_err)?;
         } else if version > SCHEMA_VERSION {
             return Err(AppError::Settings(
@@ -176,6 +189,55 @@ impl Db {
             .map_err(db_err)?;
         }
         tx.commit().map_err(db_err)
+    }
+
+    /// Remove one post (tags links and phash cascade). Returns whether it existed.
+    pub fn delete_post(&self, provider: &str, remote_id: &str) -> AppResult<bool> {
+        let conn = self.conn.lock().expect("db lock poisoned");
+        let n = conn
+            .execute("DELETE FROM posts WHERE provider = ?1 AND remote_id = ?2", params![provider, remote_id])
+            .map_err(db_err)?;
+        // Drop tags no post uses any more.
+        conn.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM post_tags)", [])
+            .map_err(db_err)?;
+        Ok(n > 0)
+    }
+
+    /// Every entry (for maintenance scans).
+    pub fn all_entries(&self) -> AppResult<Vec<LocalEntry>> {
+        let conn = self.conn.lock().expect("db lock poisoned");
+        let mut st = conn
+            .prepare("SELECT provider, remote_id, md5, local_path, downloaded_at FROM posts ORDER BY id")
+            .map_err(db_err)?;
+        st.query_map([], Self::row_entry)
+            .map_err(db_err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db_err)
+    }
+
+    /// Stored perceptual hashes keyed by "provider:remote_id".
+    pub fn phashes(&self) -> AppResult<std::collections::HashMap<String, u64>> {
+        let conn = self.conn.lock().expect("db lock poisoned");
+        let mut st = conn
+            .prepare("SELECT p.provider, p.remote_id, h.hash FROM phash h JOIN posts p ON p.id = h.post_id")
+            .map_err(db_err)?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((format!("{}:{}", r.get::<_, String>(0)?, r.get::<_, String>(1)?), r.get::<_, i64>(2)? as u64))
+            })
+            .map_err(db_err)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(db_err)
+    }
+
+    pub fn set_phash(&self, provider: &str, remote_id: &str, hash: u64) -> AppResult<()> {
+        let conn = self.conn.lock().expect("db lock poisoned");
+        conn.execute(
+            "INSERT OR REPLACE INTO phash (post_id, hash)
+             SELECT id, ?3 FROM posts WHERE provider = ?1 AND remote_id = ?2",
+            params![provider, remote_id, hash as i64],
+        )
+        .map_err(db_err)?;
+        Ok(())
     }
 
     /// Run read-only queries (used by `library`).
@@ -271,6 +333,35 @@ pub mod tests {
         db.upsert(&s, "a").unwrap();
         assert_eq!(db.post_count().unwrap(), 1);
         assert_eq!(db.tags_of("danbooru", "1"), vec![("example_artist".into(), "artist".into())]);
+    }
+
+    #[test]
+    fn delete_cascades_and_prunes_tags() {
+        let db = Db::open_in_memory().unwrap();
+        db.upsert(&sidecar("danbooru", "1", MD5), "a").unwrap();
+        db.set_phash("danbooru", "1", 42).unwrap();
+        assert_eq!(db.phashes().unwrap().get("danbooru:1"), Some(&42));
+        assert!(db.delete_post("danbooru", "1").unwrap());
+        assert!(!db.delete_post("danbooru", "1").unwrap());
+        assert_eq!(db.post_count().unwrap(), 0);
+        assert!(db.phashes().unwrap().is_empty());
+        let tags: i64 = db.with_conn(|c| c.query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0))).unwrap();
+        assert_eq!(tags, 0);
+    }
+
+    #[test]
+    fn migrates_v1_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1.sqlite");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(&format!("{SCHEMA_V1} PRAGMA user_version = 1;")).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        db.upsert(&sidecar("danbooru", "1", MD5), "a").unwrap();
+        db.set_phash("danbooru", "1", 7).unwrap();
+        let v: i64 = db.with_conn(|c| c.query_row("PRAGMA user_version", [], |r| r.get(0))).unwrap();
+        assert_eq!(v, 2);
     }
 
     #[test]

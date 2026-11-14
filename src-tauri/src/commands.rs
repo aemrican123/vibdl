@@ -34,6 +34,8 @@ pub struct AppState {
     /// Limits concurrent local thumbnail generation (CPU/RAM heavy).
     pub thumb_gen: tokio::sync::Semaphore,
     pub queue: Queue,
+    /// Board tag suggestions by "provider:prefix" (session cache).
+    pub suggest_cache: Mutex<std::collections::HashMap<String, Vec<providers::TagInfo>>>,
 }
 
 fn info(id: &str) -> AppResult<&'static ProviderInfo> {
@@ -574,6 +576,164 @@ pub async fn queue_worker(app: AppHandle) {
         }
         emit_queue(&app, &state.queue);
     }
+}
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> AppResult<T> + Send + 'static) -> AppResult<T> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| AppError::Settings(format!("background task failed: {e}")))?
+}
+
+/// Move an item's files to the Recycle Bin and remove it from the index.
+#[tauri::command]
+pub async fn library_delete(
+    state: State<'_, AppState>,
+    provider: String,
+    remote_id: String,
+) -> AppResult<library::manage::DeleteReport> {
+    state.require_age()?;
+    let lib = state.library()?;
+    let entry = lib
+        .db
+        .find(&provider, &remote_id, None)?
+        .filter(|e| e.provider == provider && e.remote_id == remote_id)
+        .ok_or_else(|| AppError::Settings("That item isn't in the library.".into()))?;
+    let report = blocking(move || library::manage::delete(&lib, &entry, library::manage::DeleteMode::RecycleBin)).await?;
+    tracing::info!(%provider, %remote_id, "deleted from library");
+    Ok(report)
+}
+
+/// Re-fetch a post's metadata from its board and update sidecar + index.
+/// The image file is not touched.
+#[tauri::command]
+pub async fn library_refresh(
+    state: State<'_, AppState>,
+    provider: String,
+    remote_id: String,
+) -> AppResult<Option<library::LibraryDetails>> {
+    state.require_age()?;
+    let lib = state.library()?;
+    let entry = lib
+        .db
+        .find(&provider, &remote_id, None)?
+        .filter(|e| e.provider == provider && e.remote_id == remote_id)
+        .ok_or_else(|| AppError::Settings("That item isn't in the library.".into()))?;
+    let p = state.provider(&provider)?;
+    let post = p
+        .get_post(&remote_id)
+        .await?
+        .ok_or_else(|| AppError::Rejected("the board no longer has this post (deleted?)".into()))?;
+    state.posts.put(&post);
+    let (tags, tag_err, _) = metadata::categorize_post(p.as_ref(), &state.tag_cache, &post).await;
+    if let Some(e) = tag_err {
+        return Err(AppError::Rejected(format!("couldn't categorize tags: {e}")));
+    }
+    let media = crate::storage::resolve_inside(&lib.root, std::path::Path::new(&entry.local_path))?;
+    let mut sc = crate::storage::read_sidecar(&crate::storage::sidecar_path_for(&media))?;
+    sc.rating = post.rating.clone();
+    sc.width = post.width.or(sc.width);
+    sc.height = post.height.or(sc.height);
+    sc.source = post.source.clone();
+    sc.post_url = post.post_url.clone();
+    sc.file_url = post.file_url.clone().or(sc.file_url);
+    sc.created_at = post.created_at_raw.clone().or(sc.created_at);
+    sc.tags = tags;
+    sc.raw = post.raw.clone();
+    crate::storage::write_sidecar(&media, &sc)?;
+    lib.db.upsert(&sc, &entry.local_path)?;
+    library::details(&lib.db, &provider, &remote_id)
+}
+
+#[tauri::command]
+pub async fn library_similar(state: State<'_, AppState>) -> AppResult<library::manage::SimilarReport> {
+    let settings = state.require_age()?;
+    let lib = state.library()?;
+    let cache = state.thumbs.dir().to_path_buf();
+    blocking(move || library::manage::similar(&lib, &cache, &settings.allowed_ratings)).await
+}
+
+#[tauri::command]
+pub async fn library_check(state: State<'_, AppState>) -> AppResult<library::manage::CheckReport> {
+    let lib = state.library()?;
+    blocking(move || library::manage::check(&lib)).await
+}
+
+#[tauri::command]
+pub async fn library_remove_missing(state: State<'_, AppState>) -> AppResult<usize> {
+    let lib = state.library()?;
+    blocking(move || library::manage::remove_missing(&lib, library::manage::DeleteMode::RecycleBin)).await
+}
+
+/// Copy the items matching `q` into `dest` with readable names.
+#[tauri::command]
+pub async fn library_export(
+    state: State<'_, AppState>,
+    q: String,
+    dest: String,
+    pattern: String,
+) -> AppResult<library::manage::ExportReport> {
+    let settings = state.require_age()?;
+    let lib = state.library()?;
+    blocking(move || {
+        library::manage::export(&lib, &q, &settings.allowed_ratings, std::path::Path::new(dest.trim()), &pattern)
+    })
+    .await
+}
+
+/// Suggestions for the word being typed in Browse, from the active board.
+#[tauri::command]
+pub async fn suggest_tags(state: State<'_, AppState>, prefix: String) -> AppResult<Vec<providers::TagInfo>> {
+    let settings = state.require_age()?;
+    let Some(prefix) = providers::suggestion_prefix(&prefix) else { return Ok(vec![]) };
+    let key = format!("{}:{prefix}", settings.active_provider);
+    if let Some(hit) = state.suggest_cache.lock().expect("cache poisoned").get(&key) {
+        return Ok(hit.clone());
+    }
+    let p = state.provider(&settings.active_provider)?;
+    let list = p.suggest_tags(&prefix, 12).await?;
+    let mut cache = state.suggest_cache.lock().expect("cache poisoned");
+    if cache.len() > 2000 {
+        cache.clear();
+    }
+    cache.insert(key, list.clone());
+    Ok(list)
+}
+
+/// Suggestions for the Library filter box, from your own downloads.
+#[tauri::command]
+pub fn library_suggest(state: State<'_, AppState>, token: String) -> AppResult<Vec<library::Suggestion>> {
+    state.require_age()?;
+    let (category, rest) = library::split_category(&token);
+    let Some(prefix) = providers::suggestion_prefix(&rest).or_else(|| (category.is_some() && !rest.is_empty()).then_some(rest.clone())) else {
+        return Ok(vec![]);
+    };
+    library::suggest(&state.library()?.db, &prefix, category, 12)
+}
+
+/// Serve `media` URI requests with Range support:
+/// `<provider>-<md5>-v` (board video) or `l-<provider>-<md5>` (library file).
+pub async fn serve_media(
+    state: &AppState,
+    key: &str,
+    range: browse::media::Range,
+) -> AppResult<Option<browse::media::MediaResponse>> {
+    if let Some(rest) = key.strip_prefix("l-") {
+        let Some((provider, md5)) = rest.split_once('-') else { return Ok(None) };
+        if !crate::storage::is_md5(md5) || providers::provider_info(provider).is_none() {
+            return Ok(None);
+        }
+        let lib = state.library()?;
+        let Some(entry) = lib.db.find(provider, "", Some(md5))? else { return Ok(None) };
+        let ext = entry.local_path.rsplit('.').next().unwrap_or("").to_string();
+        if !browse::media::is_video(&ext) {
+            return Ok(None);
+        }
+        let abs = crate::storage::resolve_inside(&lib.root, std::path::Path::new(&entry.local_path))?;
+        return browse::media::local(&abs, &ext, range).await.map(Some);
+    }
+    let Some(url) = state.thumbs.video_url(key) else { return Ok(None) };
+    let ext = url.rsplit('.').next().unwrap_or("mp4").to_string();
+    browse::media::remote(state.thumbs.http(), &url, &ext, range).await.map(Some)
 }
 
 /// Rebuild the SQLite index from sidecar files.

@@ -2,6 +2,7 @@
   import { onDestroy } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import PostPanel from "$lib/PostPanel.svelte";
+  import TagInput from "$lib/TagInput.svelte";
   import { api, errorText, thumbUrl, type BrowsePost, type Job } from "$lib/api";
 
   let {
@@ -189,11 +190,11 @@
 
 <div class="browse">
   <form class="searchbar" onsubmit={search}>
-    <input
+    <TagInput
       bind:value={query}
       placeholder="Search tags, e.g. long_hair blue_eyes (Danbooru: max 2 tags without Gold)"
-      spellcheck="false"
-      autocomplete="off"
+      fetch={(w) => api.suggestTags(w)}
+      onsubmit={() => search()}
     />
     <button type="submit" disabled={loading && posts.length === 0}>Search</button>
     <button
@@ -290,10 +291,6 @@
 <style>
   .browse { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .searchbar { display: flex; gap: 8px; padding: 14px 16px 6px; }
-  .searchbar input {
-    flex: 1; padding: 9px 12px; background: #15161a; color: inherit;
-    border: 1px solid #353640; border-radius: 6px; font: inherit;
-  }
   .status { padding: 2px 18px 8px; color: #9a9ba3; font-size: 0.85rem; }
   .selbar {
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 16px 8px;

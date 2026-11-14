@@ -145,4 +145,16 @@ impl ImageboardProvider for GelbooruProvider {
     fn post_url(&self, remote_id: &str) -> String {
         post_url(self.site, remote_id)
     }
+
+    async fn suggest_tags(&self, prefix: &str, limit: u32) -> AppResult<Vec<TagInfo>> {
+        let mut q = self.base_query("tag");
+        // `%` = any run of characters; `_` matches one char, so results
+        // are re-filtered to exact prefixes.
+        q.push(("name_pattern", format!("{prefix}%")));
+        q.push(("orderby", "count".into()));
+        q.push(("order", "DESC".into()));
+        q.push(("limit", (limit * 2).min(50).to_string()));
+        let body = self.client.get_json(self.site.api_url, &q).await?;
+        Ok(super::filter_suggestions(prefix, parse::tags(&body)?, limit as usize))
+    }
 }

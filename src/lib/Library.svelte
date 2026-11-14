@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import LibraryTools from "$lib/LibraryTools.svelte";
   import LocalPanel from "$lib/LocalPanel.svelte";
+  import TagInput from "$lib/TagInput.svelte";
   import {
     api,
     errorText,
@@ -22,6 +24,18 @@
   let sentinel = $state<HTMLDivElement | null>(null);
   let failed = $state<Set<string>>(new Set());
   let generation = 0;
+  let view = $state<"gallery" | "tools">("gallery");
+
+  function removed(it: LibraryItem) {
+    items = items.filter((x) => !(x.provider === it.provider && x.remote_id === it.remote_id));
+    total = Math.max(0, total - 1);
+    if (selected?.provider === it.provider && selected?.remote_id === it.remote_id) selected = null;
+  }
+
+  function openFromTools(it: LibraryItem) {
+    view = "gallery";
+    selected = it;
+  }
 
   const hasMore = $derived(items.length < total);
 
@@ -88,20 +102,31 @@
     search();
   }
 
+  // Keep "-" and a category prefix ("artist:", "char:", …) when completing.
+  function splitLibrary(word: string): [string, string] {
+    const m = word.match(/^(-?)((?:artist|character|char|copyright|copy|general|meta):)?/i);
+    const lead = m ? m[0] : "";
+    return [lead, word.slice(lead.length)];
+  }
+
   const FACET_GROUPS: { key: keyof Facets; label: string; prefix: string }[] = [
     { key: "artist", label: "Artists", prefix: "artist:" },
     { key: "character", label: "Characters", prefix: "char:" },
     { key: "copyright", label: "Copyrights", prefix: "copy:" },
+    { key: "general", label: "General tags", prefix: "" },
   ];
+  const COLLAPSED = 10;
+  let expanded = $state<Record<string, boolean>>({});
 </script>
 
 <div class="lib">
   <form class="bar" onsubmit={search}>
-    <input
+    <TagInput
       bind:value={query}
       placeholder="Filter: long_hair -monochrome artist:name char:name copy:series rating:g type:png board:danbooru"
-      spellcheck="false"
-      autocomplete="off"
+      fetch={(w) => api.librarySuggest(w)}
+      split={splitLibrary}
+      onsubmit={() => search()}
     />
     <select bind:value={sort} onchange={() => search()} aria-label="Sort">
       <option value="newest">Newest downloads</option>
@@ -110,6 +135,10 @@
       <option value="file_size">Largest files</option>
     </select>
     <button type="submit">Filter</button>
+    <div class="seg" role="tablist">
+      <button type="button" class:on={view === "gallery"} onclick={() => (view = "gallery")}>Gallery</button>
+      <button type="button" class:on={view === "tools"} onclick={() => (view = "tools")}>Tools</button>
+    </div>
   </form>
 
   <div class="status">
@@ -120,14 +149,20 @@
     {#if loading}<span class="dim">· loading…</span>{/if}
   </div>
 
-  <div class="body">
+  {#if view === "tools"}
+    <div class="toolswrap">
+      <LibraryTools query={activeQuery} {total} onopen={openFromTools} onchanged={() => search()} />
+    </div>
+  {/if}
+
+  <div class="body" class:hidden={view !== "gallery"}>
     <aside class="facets">
       {#if facets}
         {#each FACET_GROUPS as g}
           {#if facets[g.key].length}
             <h4>{g.label}</h4>
             <ul>
-              {#each facets[g.key] as f}
+              {#each expanded[g.key] ? facets[g.key] : facets[g.key].slice(0, COLLAPSED) as f}
                 <li>
                   <button class={`facet ${g.key}`} onclick={() => filterBy(g.prefix + f.name)}>
                     <span>{f.name.replaceAll("_", " ")}</span><span class="n">{f.count}</span>
@@ -135,10 +170,15 @@
                 </li>
               {/each}
             </ul>
+            {#if facets[g.key].length > COLLAPSED}
+              <button class="more" onclick={() => (expanded = { ...expanded, [g.key]: !expanded[g.key] })}>
+                {expanded[g.key] ? "Show fewer" : `Show all ${facets[g.key].length}`}
+              </button>
+            {/if}
           {/if}
         {/each}
-        {#if !facets.artist.length && !facets.character.length && !facets.copyright.length}
-          <p class="dim small">No artist/character/copyright tags in these results.</p>
+        {#if !facets.artist.length && !facets.character.length && !facets.copyright.length && !facets.general.length}
+          <p class="dim small">No tags in these results.</p>
         {/if}
       {/if}
     </aside>
@@ -177,7 +217,7 @@
     </div>
 
     {#if selected}
-      <LocalPanel item={selected} onclose={() => (selected = null)} onfilter={filterBy} />
+      <LocalPanel item={selected} onclose={() => (selected = null)} onfilter={filterBy} ondeleted={removed} />
     {/if}
   </div>
 </div>
@@ -185,11 +225,10 @@
 <style>
   .lib { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .bar { display: flex; gap: 8px; padding: 14px 16px 6px; }
-  .bar input, .bar select {
+  .bar select {
     padding: 9px 12px; background: #15161a; color: inherit; border: 1px solid #353640;
     border-radius: 6px; font: inherit;
   }
-  .bar input { flex: 1; }
   .status { padding: 2px 18px 8px; color: #9a9ba3; font-size: 0.85rem; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .chip {
     background: #26272e; border: 1px solid #353640; color: #d6d7dc; border-radius: 12px;
@@ -197,6 +236,13 @@
   }
   .chip:hover { border-color: #f07b7b; }
   .body { flex: 1; display: flex; min-height: 0; }
+  .body.hidden { display: none; }
+  .toolswrap { flex: 1; overflow-y: auto; }
+  .seg { display: flex; border: 1px solid #353640; border-radius: 6px; overflow: hidden; }
+  .seg button {
+    background: transparent; border: none; color: #9a9ba3; padding: 8px 12px; font: inherit; cursor: pointer;
+  }
+  .seg button.on { background: #2d2f3a; color: #fff; }
   .facets { width: 210px; flex-shrink: 0; overflow-y: auto; padding: 0 8px 24px 16px; }
   h4 { margin: 12px 0 6px; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: #b5b6bf; }
   ul { list-style: none; margin: 0; padding: 0; }
@@ -210,6 +256,10 @@
   .facet.artist { color: #ff8a8a; }
   .facet.character { color: #7fdc8f; }
   .facet.copyright { color: #d19bff; }
+  .more {
+    background: none; border: none; color: #8fa0ff; font: inherit; font-size: 0.78rem;
+    padding: 2px 6px; cursor: pointer;
+  }
   .n { color: #7d7e87; flex-shrink: 0; }
   .grid-wrap { flex: 1; overflow-y: auto; padding: 0 16px 24px 8px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
